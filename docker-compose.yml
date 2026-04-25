@@ -1,0 +1,24 @@
+services:
+  device-1:
+    build:
+      context: .
+      dockerfile: docker/device/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/device-1/vantaqd.json:/etc/vantaqd/vantaqd.json:ro
+    networks:
+      - attestation_net
+    entrypoint: ["/bin/sh", "-lc"]
+    # Temporary pre-T05 behavior: run current short-lived binary, then keep container alive.
+    command: ["/usr/local/bin/vantaqd || true; tail -f /dev/null"]
+
+  verifier-cli:
+    image: curlimages/curl:8.12.1
+    networks:
+      - attestation_net
+
+networks:
+  attestation_net:
+    name: attestation_net
+    driver: bridge
