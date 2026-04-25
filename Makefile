@@ -24,7 +24,7 @@ INTEG_TEST_BIN := $(TEST_DIR)/integration/test_cli_smoke
 CMOCKA_CFLAGS := $(shell pkg-config --cflags cmocka 2>/dev/null)
 CMOCKA_LIBS := $(shell pkg-config --libs cmocka 2>/dev/null || printf '%s' '-lcmocka')
 
-.PHONY: all format build clean test
+.PHONY: all format build clean test docker-device-build
 
 all: build
 
@@ -56,3 +56,6 @@ test: build $(UNIT_TEST_BIN) $(INTEG_TEST_BIN)
 
 clean:
 	rm -rf build bin
+
+docker-device-build:
+	docker build -f docker/device/Dockerfile -t vantaqd-device:local .
