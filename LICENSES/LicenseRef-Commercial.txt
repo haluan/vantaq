@@ -1,0 +1,49 @@
+Commercial License Notice for vantaq
+
+SPDX-License-Identifier: LicenseRef-Commercial
+
+Copyright (c) 2026 Haluan Irsad
+
+This file describes the commercial licensing option for vantaq.
+
+vantaq is available under a dual-license model:
+
+    AGPL-3.0-only OR LicenseRef-Commercial
+
+You may use, copy, modify, and distribute vantaq under the terms of the
+GNU Affero General Public License version 3 only.
+
+Alternatively, you may use vantaq under a separate commercial license
+agreement granted by Haluan Irsad.
+
+Commercial license rights are not granted by possession of this file,
+by possession of the source code, by cloning the repository, by downloading
+a release, or by receiving a copy of vantaq.
+
+Commercial license rights are granted only through a separate written
+agreement signed or otherwise explicitly authorized by Haluan Irsad.
+
+A commercial license may be required for use cases including, but not
+limited to:
+
+- proprietary modification of vantaq;
+- private forks of vantaq;
+- redistribution of modified versions without complying with AGPL-3.0-only;
+- embedding vantaq into proprietary firmware, appliances, or devices;
+- OEM distribution;
+- commercial redistribution;
+- private customer-specific builds;
+- certified enterprise builds;
+- long-term support arrangements;
+- support, warranty, indemnity, or service-level agreements;
+- any use case where AGPL-3.0-only obligations are not suitable for the user.
+
+Unless a separate commercial license agreement is granted, all use of the
+source code must comply with AGPL-3.0-only.
+
+This commercial license notice does not provide any warranty, support,
+indemnity, trademark license, patent license, or other commercial rights.
+
+For commercial licensing inquiries, contact:
+
+    Haluan Irsad (haluan.irsad@gmail.com)

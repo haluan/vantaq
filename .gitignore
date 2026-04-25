@@ -59,3 +59,4 @@ build/
 # Internal folders
 .internalx/
 tmp/
+bin/
