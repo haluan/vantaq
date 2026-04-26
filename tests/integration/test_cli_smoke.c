@@ -346,8 +346,6 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     int status;
     int health_status;
     char health_body[512];
-    long long uptime_seconds = -1;
-    char *uptime_field;
     int identity_status;
     char identity_body[512];
     int capabilities_status;
@@ -389,16 +387,15 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
                                              "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
                                              &health_status, health_body, sizeof(health_body)),
                      0);
-    assert_int_equal(health_status, 200);
-    assert_non_null(strstr(health_body, "\"status\":\"ok\""));
-    assert_non_null(strstr(health_body, "\"service\":\"vantaqd\""));
-    assert_non_null(strstr(health_body, "\"version\":\"0.1.0\""));
-    assert_non_null(strstr(health_body, "\"uptime_seconds\":"));
-    uptime_field = strstr(health_body, "\"uptime_seconds\":");
-    assert_non_null(uptime_field);
-    uptime_field += strlen("\"uptime_seconds\":");
-    assert_int_equal(sscanf(uptime_field, "%lld", &uptime_seconds), 1);
-    assert_true(uptime_seconds >= 0);
+    assert_int_equal(health_status, 401);
+    assert_non_null(strstr(health_body, "\"error\""));
+    assert_non_null(strstr(health_body, "\"code\":\"MTLS_REQUIRED\""));
+    assert_non_null(
+        strstr(health_body, "\"message\":\"Valid verifier client certificate is required.\""));
+    assert_null(strstr(health_body, "\"status\":\"ok\""));
+    assert_null(strstr(health_body, "\"service\":\"vantaqd\""));
+    assert_null(strstr(health_body, "\"version\":\"0.1.0\""));
+    assert_null(strstr(health_body, "\"uptime_seconds\":"));
     assert_int_equal(
         request_status_and_body(port, "GET /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n\r\n",
                                 &identity_status, identity_body, sizeof(identity_body)),

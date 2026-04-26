@@ -70,6 +70,16 @@ if sh -c "${COMPOSE_CMD} run --rm allowed-verifier -sS -i \
   cat "${tmp_missing}"
   exit 1
 fi
+if grep -Eq '^HTTP/[0-9.]+ 200 ' "${tmp_missing}"; then
+  echo "mtls-transport-smoke: FAIL missing client cert leaked HTTP 200 response"
+  cat "${tmp_missing}"
+  exit 1
+fi
+if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "${tmp_missing}"; then
+  echo "mtls-transport-smoke: FAIL missing client cert leaked health success body"
+  cat "${tmp_missing}"
+  exit 1
+fi
 echo "mtls-transport-smoke: PASS missing client certificate rejected at handshake"
 
 if sh -c "${COMPOSE_CMD} run --rm allowed-verifier -sS -i \
@@ -78,6 +88,16 @@ if sh -c "${COMPOSE_CMD} run --rm allowed-verifier -sS -i \
   --key \"${UNTRUSTED_KEY}\" \
   \"${HEALTH_URL}\"" >"${tmp_untrusted}" 2>&1; then
   echo "mtls-transport-smoke: FAIL untrusted client cert unexpectedly succeeded"
+  cat "${tmp_untrusted}"
+  exit 1
+fi
+if grep -Eq '^HTTP/[0-9.]+ 200 ' "${tmp_untrusted}"; then
+  echo "mtls-transport-smoke: FAIL untrusted client cert leaked HTTP 200 response"
+  cat "${tmp_untrusted}"
+  exit 1
+fi
+if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "${tmp_untrusted}"; then
+  echo "mtls-transport-smoke: FAIL untrusted client cert leaked health success body"
   cat "${tmp_untrusted}"
   exit 1
 fi

@@ -4,6 +4,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "infrastructure/http_server.h"
+#include "application/security/verifier_context.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
@@ -75,6 +76,7 @@ struct vantaq_http_request_context {
     char peer_ipv4[INET_ADDRSTRLEN];
     bool peer_ip_ok;
     enum vantaq_peer_address_status peer_status;
+    struct vantaq_verifier_auth_context verifier_auth;
 };
 
 struct vantaq_http_connection {
@@ -191,6 +193,34 @@ static int send_subnet_denied_response(struct vantaq_http_connection *connection
 
     n_resp = snprintf(response, sizeof(response),
                       "HTTP/1.1 403 Forbidden\r\n"
+                      "Content-Type: application/json\r\n"
+                      "Content-Length: %d\r\n"
+                      "Connection: close\r\n"
+                      "\r\n"
+                      "%s",
+                      n_body, json_body);
+    if (n_resp <= 0 || (size_t)n_resp >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(connection, response, (size_t)n_resp);
+}
+
+static int send_mtls_required_response(struct vantaq_http_connection *connection) {
+    char json_body[192];
+    char response[384];
+    int n_body;
+    int n_resp;
+
+    n_body = snprintf(json_body, sizeof(json_body),
+                      "{\"error\":{\"code\":\"MTLS_REQUIRED\","
+                      "\"message\":\"Valid verifier client certificate is required.\"}}\n");
+    if (n_body <= 0 || (size_t)n_body >= sizeof(json_body)) {
+        return -1;
+    }
+
+    n_resp = snprintf(response, sizeof(response),
+                      "HTTP/1.1 401 Unauthorized\r\n"
                       "Content-Type: application/json\r\n"
                       "Content-Length: %d\r\n"
                       "Connection: close\r\n"
@@ -564,6 +594,11 @@ static void handle_client(struct vantaq_http_connection *connection,
     request_ctx.peer_status = vantaq_peer_address_get_ipv4(connection->fd, request_ctx.peer_ipv4,
                                                            sizeof(request_ctx.peer_ipv4));
     request_ctx.peer_ip_ok  = (request_ctx.peer_status == VANTAQ_PEER_ADDRESS_STATUS_OK);
+    request_ctx.verifier_auth.cbSize = sizeof(request_ctx.verifier_auth);
+    request_ctx.verifier_auth.status = VANTAQ_VERIFIER_AUTH_STATUS_UNAUTHENTICATED;
+    if (vantaq_tls_connection_peer_cert_verified(connection->tls_connection)) {
+        request_ctx.verifier_auth.status = VANTAQ_VERIFIER_AUTH_STATUS_AUTHENTICATED;
+    }
 
     tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
     tv.tv_usec = 0;
@@ -659,6 +694,16 @@ static void handle_client(struct vantaq_http_connection *connection,
         if (send_subnet_denied_response(connection, request_id) != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                            "http server: failed to send subnet denied response\n");
+        }
+        goto cleanup;
+    }
+
+    if (status_code == 200 && strcmp(path, "/v1/health") == 0 &&
+        !vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
+        if (send_mtls_required_response(connection) != 0) {
+            (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                           "http server: failed to send mtls-required response\n");
+            (void)send_status_response(connection, 500);
         }
         goto cleanup;
     }

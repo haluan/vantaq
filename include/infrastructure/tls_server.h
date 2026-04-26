@@ -44,6 +44,7 @@ ssize_t vantaq_tls_connection_read(struct vantaq_tls_connection *connection, voi
                                    size_t len);
 ssize_t vantaq_tls_connection_write(struct vantaq_tls_connection *connection, const void *buf,
                                     size_t len);
+bool vantaq_tls_connection_peer_cert_verified(const struct vantaq_tls_connection *connection);
 void vantaq_tls_connection_destroy(struct vantaq_tls_connection *connection);
 
 const char *vantaq_tls_server_status_text(enum vantaq_tls_server_status status);

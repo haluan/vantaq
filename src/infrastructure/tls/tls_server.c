@@ -195,6 +195,25 @@ ssize_t vantaq_tls_connection_write(struct vantaq_tls_connection *connection, co
     return -1;
 }
 
+bool vantaq_tls_connection_peer_cert_verified(const struct vantaq_tls_connection *connection) {
+    X509 *peer_certificate;
+    long verify_result;
+
+    if (connection == NULL || connection->ssl == NULL) {
+        return false;
+    }
+
+    peer_certificate = SSL_get_peer_certificate(connection->ssl);
+    if (peer_certificate == NULL) {
+        return false;
+    }
+
+    X509_free(peer_certificate);
+
+    verify_result = SSL_get_verify_result(connection->ssl);
+    return verify_result == X509_V_OK;
+}
+
 void vantaq_tls_connection_destroy(struct vantaq_tls_connection *connection) {
     if (connection == NULL) {
         return;
