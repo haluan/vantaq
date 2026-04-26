@@ -17,12 +17,33 @@ struct vantaq_string_list {
     size_t count;
 };
 
+struct vantaq_verifier_config {
+    char verifier_id[VANTAQ_MAX_FIELD_LEN];
+    char cert_subject_cn[VANTAQ_MAX_FIELD_LEN];
+    char cert_san_uri[VANTAQ_MAX_FIELD_LEN];
+    char status[VANTAQ_MAX_FIELD_LEN];
+    struct vantaq_string_list roles;
+    struct vantaq_string_list allowed_apis;
+
+    bool has_verifier_id;
+    bool has_cert_subject_cn;
+    bool has_cert_san_uri;
+    bool has_status;
+    bool has_roles;
+    bool has_allowed_apis;
+};
+
 struct vantaq_runtime_config {
     size_t cbSize;
 
     char service_listen_host[VANTAQ_MAX_FIELD_LEN];
     int service_listen_port;
     char service_version[VANTAQ_MAX_FIELD_LEN];
+    bool tls_enabled;
+    char tls_server_cert_path[VANTAQ_MAX_FIELD_LEN];
+    char tls_server_key_path[VANTAQ_MAX_FIELD_LEN];
+    char tls_trusted_client_ca_path[VANTAQ_MAX_FIELD_LEN];
+    bool tls_require_client_cert;
 
     char device_id[VANTAQ_MAX_FIELD_LEN];
     char model[VANTAQ_MAX_FIELD_LEN];
@@ -39,10 +60,17 @@ struct vantaq_runtime_config {
     bool dev_allow_all_networks;
     size_t audit_log_max_bytes;
     char audit_log_path[VANTAQ_MAX_FIELD_LEN];
+    struct vantaq_verifier_config verifiers[VANTAQ_MAX_LIST_ITEMS];
+    size_t verifiers_count;
 
     bool has_service_listen_host;
     bool has_service_listen_port;
     bool has_service_version;
+    bool has_tls_enabled;
+    bool has_tls_server_cert_path;
+    bool has_tls_server_key_path;
+    bool has_tls_trusted_client_ca_path;
+    bool has_tls_require_client_cert;
     bool has_device_id;
     bool has_model;
     bool has_serial_number;
@@ -57,6 +85,7 @@ struct vantaq_runtime_config {
     bool has_dev_allow_all_networks;
     bool has_audit_log_max_bytes;
     bool has_audit_log_path;
+    bool has_verifiers;
 };
 
 enum vantaq_config_status {
@@ -93,6 +122,11 @@ vantaq_config_loader_config(const struct vantaq_config_loader *loader);
 const char *vantaq_runtime_service_listen_host(const struct vantaq_runtime_config *config);
 int vantaq_runtime_service_listen_port(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_service_version(const struct vantaq_runtime_config *config);
+bool vantaq_runtime_tls_enabled(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_tls_server_cert_path(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_tls_server_key_path(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_tls_trusted_client_ca_path(const struct vantaq_runtime_config *config);
+bool vantaq_runtime_tls_require_client_cert(const struct vantaq_runtime_config *config);
 
 const char *vantaq_runtime_device_id(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_device_model(const struct vantaq_runtime_config *config);
@@ -110,5 +144,19 @@ const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_confi
 bool vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_audit_log_max_bytes(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_audit_log_path(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_verifier_count(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_verifier_id(const struct vantaq_runtime_config *config, size_t index);
+const char *vantaq_runtime_verifier_cert_subject_cn(const struct vantaq_runtime_config *config,
+                                                    size_t index);
+const char *vantaq_runtime_verifier_cert_san_uri(const struct vantaq_runtime_config *config,
+                                                 size_t index);
+const char *vantaq_runtime_verifier_status(const struct vantaq_runtime_config *config, size_t index);
+size_t vantaq_runtime_verifier_role_count(const struct vantaq_runtime_config *config, size_t index);
+const char *vantaq_runtime_verifier_role_item(const struct vantaq_runtime_config *config,
+                                              size_t verifier_index, size_t role_index);
+size_t vantaq_runtime_verifier_allowed_api_count(const struct vantaq_runtime_config *config,
+                                                 size_t index);
+const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime_config *config,
+                                                     size_t verifier_index, size_t api_index);
 
 #endif

@@ -54,6 +54,10 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_config_loader PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_config_loader COMMAND test_config_loader)
 
+  add_executable(test_security_config tests/unit/test_security_config.c)
+  target_link_libraries(test_security_config PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_security_config COMMAND test_security_config)
+
   add_executable(test_socket_peer tests/unit/test_socket_peer.c)
   target_link_libraries(test_socket_peer PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_socket_peer COMMAND test_socket_peer)

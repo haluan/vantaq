@@ -11,7 +11,6 @@
 #else
 #include <limits.h>
 #endif
-#include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -21,15 +20,6 @@
 #define VANTAQ_USAGE "Usage: vantaqd [--version] [--config <path>]\n"
 #define VANTAQ_DEFAULT_AUDIT_LOG_PATH "/var/lib/vantaqd/audit.log"
 #define VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES (64U * 1024U)
-#define VANTAQ_DEFAULT_TLS_SERVER_CERT_PATH "/etc/vantaqd/certs/device-server.crt"
-#define VANTAQ_DEFAULT_TLS_SERVER_KEY_PATH "/etc/vantaqd/certs/device-server.key"
-#define VANTAQ_DEFAULT_TLS_TRUSTED_CLIENT_CA_PATH "/etc/vantaqd/certs/verifier-ca.crt"
-
-#define VANTAQ_ENV_TLS_ENABLED "VANTAQ_TLS_ENABLED"
-#define VANTAQ_ENV_TLS_SERVER_CERT_PATH "VANTAQ_TLS_SERVER_CERT_PATH"
-#define VANTAQ_ENV_TLS_SERVER_KEY_PATH "VANTAQ_TLS_SERVER_KEY_PATH"
-#define VANTAQ_ENV_TLS_TRUSTED_CLIENT_CA_PATH "VANTAQ_TLS_TRUSTED_CLIENT_CA_PATH"
-#define VANTAQ_ENV_TLS_REQUIRE_CLIENT_CERT "VANTAQ_TLS_REQUIRE_CLIENT_CERT"
 
 static int vantaq_write(const vantaq_write_fn writer, void *ctx, const char *text) {
     if (writer != NULL && text != NULL) {
@@ -136,42 +126,6 @@ collect_allowed_subnet_items(const struct vantaq_runtime_config *config, const c
     return collect_items(items, items_capacity, count_out, count, subnet_accessor, &ctx);
 }
 
-static bool vantaq_ascii_ieq(const char *lhs, const char *rhs) {
-    if (lhs == NULL || rhs == NULL) {
-        return false;
-    }
-
-    while (*lhs != '\0' && *rhs != '\0') {
-        if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs)) {
-            return false;
-        }
-        lhs++;
-        rhs++;
-    }
-
-    return *lhs == '\0' && *rhs == '\0';
-}
-
-static bool vantaq_parse_bool_env_value(const char *value, bool *out) {
-    if (value == NULL || out == NULL) {
-        return false;
-    }
-
-    if (vantaq_ascii_ieq(value, "1") || vantaq_ascii_ieq(value, "true") ||
-        vantaq_ascii_ieq(value, "yes") || vantaq_ascii_ieq(value, "on")) {
-        *out = true;
-        return true;
-    }
-
-    if (vantaq_ascii_ieq(value, "0") || vantaq_ascii_ieq(value, "false") ||
-        vantaq_ascii_ieq(value, "no") || vantaq_ascii_ieq(value, "off")) {
-        *out = false;
-        return true;
-    }
-
-    return false;
-}
-
 int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
     const char *config_path             = VANTAQ_DEFAULT_CONFIG_PATH;
     bool config_path_set                = false;
@@ -243,11 +197,6 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         size_t challenge_modes_count                            = 0;
         size_t storage_modes_count                              = 0;
         size_t allowed_subnets_count                            = 0;
-        bool tls_enabled                                        = false;
-        bool tls_require_client_cert                            = true;
-        const char *tls_server_cert_path       = VANTAQ_DEFAULT_TLS_SERVER_CERT_PATH;
-        const char *tls_server_key_path        = VANTAQ_DEFAULT_TLS_SERVER_KEY_PATH;
-        const char *tls_trusted_client_ca_path = VANTAQ_DEFAULT_TLS_TRUSTED_CLIENT_CA_PATH;
         int n;
 
         audit_log_path = getenv("VANTAQ_AUDIT_LOG_PATH");
@@ -278,76 +227,6 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
                 (void)vantaq_write(io->write_err, io->ctx, max_bytes_env);
                 (void)vantaq_write(io->write_err, io->ctx, "\n");
             }
-        }
-
-        const char *tls_enabled_env = getenv(VANTAQ_ENV_TLS_ENABLED);
-        if (tls_enabled_env != NULL && tls_enabled_env[0] != '\0') {
-            if (!vantaq_parse_bool_env_value(tls_enabled_env, &tls_enabled)) {
-                (void)vantaq_write(io->write_err, io->ctx,
-                                   "error: VANTAQ_TLS_ENABLED must be a boolean value\n");
-                exit_code = 64;
-                goto cleanup;
-            }
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "SECURITY WARNING: TLS enablement redirected by environment "
-                               "variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, tls_enabled_env);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        const char *tls_require_client_cert_env = getenv(VANTAQ_ENV_TLS_REQUIRE_CLIENT_CERT);
-        if (tls_require_client_cert_env != NULL && tls_require_client_cert_env[0] != '\0') {
-            if (!vantaq_parse_bool_env_value(tls_require_client_cert_env,
-                                             &tls_require_client_cert)) {
-                (void)vantaq_write(io->write_err, io->ctx,
-                                   "error: VANTAQ_TLS_REQUIRE_CLIENT_CERT must be a boolean "
-                                   "value\n");
-                exit_code = 64;
-                goto cleanup;
-            }
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "SECURITY WARNING: TLS client certificate policy redirected by "
-                               "environment variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, tls_require_client_cert_env);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        const char *tls_server_cert_env = getenv(VANTAQ_ENV_TLS_SERVER_CERT_PATH);
-        if (tls_server_cert_env != NULL && tls_server_cert_env[0] != '\0') {
-            tls_server_cert_path = tls_server_cert_env;
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "SECURITY WARNING: TLS server cert path redirected by environment "
-                               "variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, tls_server_cert_path);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        const char *tls_server_key_env = getenv(VANTAQ_ENV_TLS_SERVER_KEY_PATH);
-        if (tls_server_key_env != NULL && tls_server_key_env[0] != '\0') {
-            tls_server_key_path = tls_server_key_env;
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "SECURITY WARNING: TLS server key path redirected by environment "
-                               "variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, tls_server_key_path);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        const char *tls_client_ca_env = getenv(VANTAQ_ENV_TLS_TRUSTED_CLIENT_CA_PATH);
-        if (tls_client_ca_env != NULL && tls_client_ca_env[0] != '\0') {
-            tls_trusted_client_ca_path = tls_client_ca_env;
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "SECURITY WARNING: TLS trusted client CA path redirected by "
-                               "environment variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, tls_trusted_client_ca_path);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        if (strlen(tls_server_cert_path) >= PATH_MAX || strlen(tls_server_key_path) >= PATH_MAX ||
-            strlen(tls_trusted_client_ca_path) >= PATH_MAX) {
-            (void)vantaq_write(io->write_err, io->ctx,
-                               "error: TLS path exceeds maximum path length\n");
-            exit_code = 64;
-            goto cleanup;
         }
 
         loader = vantaq_config_loader_create();
@@ -487,14 +366,15 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         server_options.dev_allow_all_networks     = vantaq_runtime_dev_allow_all_networks(config);
         server_options.audit_log_path             = audit_log_path;
         server_options.audit_log_max_bytes        = audit_log_max_bytes;
-        server_options.tls_enabled                = tls_enabled;
-        server_options.tls_server_cert_path       = tls_server_cert_path;
-        server_options.tls_server_key_path        = tls_server_key_path;
-        server_options.tls_trusted_client_ca_path = tls_trusted_client_ca_path;
-        server_options.tls_require_client_cert    = tls_require_client_cert;
-        server_options.write_out                  = io->write_out;
-        server_options.write_err                  = io->write_err;
-        server_options.io_ctx                     = io->ctx;
+        server_options.tls_enabled                = vantaq_runtime_tls_enabled(config);
+        server_options.tls_server_cert_path       = vantaq_runtime_tls_server_cert_path(config);
+        server_options.tls_server_key_path        = vantaq_runtime_tls_server_key_path(config);
+        server_options.tls_trusted_client_ca_path =
+            vantaq_runtime_tls_trusted_client_ca_path(config);
+        server_options.tls_require_client_cert = vantaq_runtime_tls_require_client_cert(config);
+        server_options.write_out               = io->write_out;
+        server_options.write_err               = io->write_err;
+        server_options.io_ctx                  = io->ctx;
 
         server_status = vantaq_http_server_run(&server_options);
         if (server_status != VANTAQ_HTTP_SERVER_STATUS_OK) {

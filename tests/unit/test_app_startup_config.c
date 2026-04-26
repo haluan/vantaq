@@ -70,10 +70,23 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
 
 static void test_startup_with_valid_config_succeeds(void **state) {
     (void)state;
-    const char *yaml      = "service:\n"
-                            "  listen_host: 127.0.0.1\n"
+    const char *yaml      = "server:\n"
+                            "  listen_address: 127.0.0.1\n"
                             "  listen_port: 8081\n"
                             "  version: 0.1.0\n"
+                            "  tls:\n"
+                            "    enabled: false\n"
+                            "    server_cert_path: /etc/hosts\n"
+                            "    server_key_path: /etc/hosts\n"
+                            "    trusted_client_ca_path: /etc/hosts\n"
+                            "    require_client_cert: true\n"
+                            "verifiers:\n"
+                            "  - verifier_id: govt-verifier-01\n"
+                            "    cert_subject_cn: govt-verifier-01\n"
+                            "    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01\n"
+                            "    status: active\n"
+                            "    roles: [verifier]\n"
+                            "    allowed_apis: [GET /v1/health]\n"
                             "device_identity:\n"
                             "  device_id: edge-gw-001\n"
                             "  model: edge-gateway-v1\n"
@@ -116,9 +129,22 @@ static void test_startup_with_valid_config_succeeds(void **state) {
 
 static void test_startup_with_invalid_config_fails(void **state) {
     (void)state;
-    const char *yaml        = "service:\n"
-                              "  listen_host: 127.0.0.1\n"
+    const char *yaml        = "server:\n"
+                              "  listen_address: 127.0.0.1\n"
                               "  version: 0.1.0\n"
+                              "  tls:\n"
+                              "    enabled: false\n"
+                              "    server_cert_path: /etc/hosts\n"
+                              "    server_key_path: /etc/hosts\n"
+                              "    trusted_client_ca_path: /etc/hosts\n"
+                              "    require_client_cert: true\n"
+                              "verifiers:\n"
+                              "  - verifier_id: govt-verifier-01\n"
+                              "    cert_subject_cn: govt-verifier-01\n"
+                              "    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01\n"
+                              "    status: active\n"
+                              "    roles: [verifier]\n"
+                              "    allowed_apis: [GET /v1/health]\n"
                               "device_identity:\n"
                               "  model: edge-gateway-v1\n";
     char config_path[256]   = {0};

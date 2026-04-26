@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define VANTAQ_MAX_LINE_LEN 512
 #define VANTAQ_MAX_PATH_LEN 256
@@ -20,11 +21,13 @@
 
 enum vantaq_section {
     VANTAQ_SECTION_NONE = 0,
-    VANTAQ_SECTION_SERVICE,
+    VANTAQ_SECTION_SERVER,
+    VANTAQ_SECTION_SERVER_TLS,
     VANTAQ_SECTION_DEVICE_IDENTITY,
     VANTAQ_SECTION_CAPABILITIES,
     VANTAQ_SECTION_NETWORK_ACCESS,
     VANTAQ_SECTION_AUDIT,
+    VANTAQ_SECTION_VERIFIERS,
 };
 
 struct vantaq_config_loader {
@@ -150,6 +153,8 @@ static void free_list(struct vantaq_string_list *list) {
 }
 
 static void free_config_lists(struct vantaq_runtime_config *config) {
+    size_t i;
+
     if (config == NULL) {
         return;
     }
@@ -160,6 +165,11 @@ static void free_config_lists(struct vantaq_runtime_config *config) {
     free_list(&config->challenge_modes);
     free_list(&config->storage_modes);
     free_list(&config->allowed_subnets);
+    for (i = 0; i < config->verifiers_count; i++) {
+        free_list(&config->verifiers[i].roles);
+        free_list(&config->verifiers[i].allowed_apis);
+    }
+    config->verifiers_count = 0;
 }
 
 static enum vantaq_config_status copy_string_to_field(struct vantaq_config_loader *loader,
@@ -614,20 +624,58 @@ static bool list_contains(const struct vantaq_string_list *list, const char *nee
 
 static enum vantaq_config_status validate_config(struct vantaq_config_loader *loader,
                                                  const struct vantaq_runtime_config *config) {
+    size_t i;
+    size_t j;
+
     if (!config->has_service_listen_host) {
-        loader_set_error(loader, "missing required field %s", "service.listen_host");
+        loader_set_error(loader, "missing required field %s", "server.listen_address");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
     if (!is_valid_listen_host(config->service_listen_host)) {
-        loader_set_error(loader, "invalid listen_host: %s", config->service_listen_host);
+        loader_set_error(loader, "invalid server.listen_address: %s", config->service_listen_host);
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
     if (!config->has_service_listen_port) {
-        loader_set_error(loader, "missing required field %s", "service.listen_port");
+        loader_set_error(loader, "missing required field %s", "server.listen_port");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
     if (!config->has_service_version) {
-        loader_set_error(loader, "missing required field %s", "service.version");
+        loader_set_error(loader, "missing required field %s", "server.version");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_enabled) {
+        loader_set_error(loader, "missing required field %s", "server.tls.enabled");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_server_cert_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.server_cert_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_server_key_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.server_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_trusted_client_ca_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.trusted_client_ca_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_require_client_cert) {
+        loader_set_error(loader, "missing required field %s", "server.tls.require_client_cert");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (access(config->tls_server_cert_path, R_OK) != 0) {
+        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_cert_path",
+                         config->tls_server_cert_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (access(config->tls_server_key_path, R_OK) != 0) {
+        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_key_path",
+                         config->tls_server_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (access(config->tls_trusted_client_ca_path, R_OK) != 0) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "server.tls.trusted_client_ca_path", config->tls_trusted_client_ca_path);
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
     if (!config->has_device_id) {
@@ -698,10 +746,53 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
     }
 
     if (config->has_allowed_subnets) {
-        size_t i;
         for (i = 0; i < config->allowed_subnets.count; i++) {
             if (!is_valid_ipv4_cidr(config->allowed_subnets.items[i])) {
                 loader_set_error(loader, "invalid CIDR in %s", config->allowed_subnets.items[i]);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+    }
+
+    if (!config->has_verifiers || config->verifiers_count == 0) {
+        loader_set_error(loader, "missing required field %s", "verifiers");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    for (i = 0; i < config->verifiers_count; i++) {
+        const struct vantaq_verifier_config *verifier = &config->verifiers[i];
+        if (!verifier->has_verifier_id || verifier->verifier_id[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].verifier_id", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_cert_subject_cn || verifier->cert_subject_cn[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].cert_subject_cn", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_cert_san_uri || verifier->cert_san_uri[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].cert_san_uri", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_status || verifier->status[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].status", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (strcmp(verifier->status, "active") != 0 && strcmp(verifier->status, "inactive") != 0) {
+            loader_set_error(loader, "invalid verifier status verifiers[%zu].status: %s", i,
+                             verifier->status);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_roles || verifier->roles.count == 0) {
+            loader_set_error(loader, "missing required field verifiers[%zu].roles", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_allowed_apis || verifier->allowed_apis.count == 0) {
+            loader_set_error(loader, "missing required field verifiers[%zu].allowed_apis", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+
+        for (j = i + 1; j < config->verifiers_count; j++) {
+            if (strcmp(verifier->verifier_id, config->verifiers[j].verifier_id) == 0) {
+                loader_set_error(loader, "duplicate verifier_id: %s", verifier->verifier_id);
                 return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
             }
         }
@@ -768,13 +859,88 @@ static bool mark_capability_seen(struct vantaq_runtime_config *config,
     return true;
 }
 
+static enum vantaq_config_status parse_verifier_field(struct vantaq_config_loader *loader,
+                                                      struct vantaq_verifier_config *verifier,
+                                                      const char *key, const char *value,
+                                                      bool *active_roles_list,
+                                                      bool *active_allowed_apis_list) {
+    enum vantaq_config_status rc;
+
+    if (loader == NULL || verifier == NULL || key == NULL || value == NULL ||
+        active_roles_list == NULL || active_allowed_apis_list == NULL) {
+        return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    *active_roles_list        = false;
+    *active_allowed_apis_list = false;
+
+    if (strcmp(key, "verifier_id") == 0) {
+        return copy_string_to_field(loader, "verifiers.verifier_id", value, verifier->verifier_id,
+                                    sizeof(verifier->verifier_id), &verifier->has_verifier_id);
+    }
+    if (strcmp(key, "cert_subject_cn") == 0) {
+        return copy_string_to_field(loader, "verifiers.cert_subject_cn", value,
+                                    verifier->cert_subject_cn, sizeof(verifier->cert_subject_cn),
+                                    &verifier->has_cert_subject_cn);
+    }
+    if (strcmp(key, "cert_san_uri") == 0) {
+        return copy_string_to_field(loader, "verifiers.cert_san_uri", value, verifier->cert_san_uri,
+                                    sizeof(verifier->cert_san_uri), &verifier->has_cert_san_uri);
+    }
+    if (strcmp(key, "status") == 0) {
+        return copy_string_to_field(loader, "verifiers.status", value, verifier->status,
+                                    sizeof(verifier->status), &verifier->has_status);
+    }
+    if (strcmp(key, "roles") == 0) {
+        if (verifier->has_roles) {
+            loader_set_error(loader, "duplicate field %s", "verifiers.roles");
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+        verifier->has_roles = true;
+        free_list(&verifier->roles);
+        if (value[0] == '\0') {
+            *active_roles_list = true;
+            return VANTAQ_CONFIG_STATUS_OK;
+        }
+        rc = parse_inline_list(loader, value, &verifier->roles, "verifiers.roles");
+        if (rc != VANTAQ_CONFIG_STATUS_OK) {
+            return rc;
+        }
+        return VANTAQ_CONFIG_STATUS_OK;
+    }
+    if (strcmp(key, "allowed_apis") == 0) {
+        if (verifier->has_allowed_apis) {
+            loader_set_error(loader, "duplicate field %s", "verifiers.allowed_apis");
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+        verifier->has_allowed_apis = true;
+        free_list(&verifier->allowed_apis);
+        if (value[0] == '\0') {
+            *active_allowed_apis_list = true;
+            return VANTAQ_CONFIG_STATUS_OK;
+        }
+        rc = parse_inline_list(loader, value, &verifier->allowed_apis, "verifiers.allowed_apis");
+        if (rc != VANTAQ_CONFIG_STATUS_OK) {
+            return rc;
+        }
+        return VANTAQ_CONFIG_STATUS_OK;
+    }
+
+    loader_set_error(loader, "unknown verifier field %s", key);
+    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+}
+
 static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *loader, FILE *fp,
                                                    struct vantaq_runtime_config *tmp) {
     char line[VANTAQ_MAX_LINE_LEN];
-    enum vantaq_section section             = VANTAQ_SECTION_NONE;
-    bool has_active_capability_list         = false;
-    bool has_active_network_subnet_list     = false;
-    enum vantaq_capability_list active_list = VANTAQ_CAPABILITY_SUPPORTED_CLAIMS;
+    enum vantaq_section section                = VANTAQ_SECTION_NONE;
+    bool has_active_capability_list            = false;
+    bool has_active_network_subnet_list        = false;
+    bool has_active_verifier_roles_list        = false;
+    bool has_active_verifier_allowed_apis_list = false;
+    bool has_active_verifier                   = false;
+    size_t active_verifier_index               = 0;
+    enum vantaq_capability_list active_list    = VANTAQ_CAPABILITY_SUPPORTED_CLAIMS;
 
     VANTAQ_ZERO_STRUCT(line);
 
@@ -805,12 +971,8 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         indent = (size_t)(cursor - line);
 
         if (cursor[0] == '-' && (cursor[1] == ' ' || cursor[1] == '\t')) {
-            if (indent != 4) {
-                loader_set_error(loader, "invalid list indentation");
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
-            }
-
-            if (section == VANTAQ_SECTION_CAPABILITIES && has_active_capability_list) {
+            if (section == VANTAQ_SECTION_CAPABILITIES && indent == 4 &&
+                has_active_capability_list) {
                 rc = parse_list_item(loader, cursor + 1, get_list_mut(tmp, active_list),
                                      "capabilities list");
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
@@ -819,7 +981,8 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 continue;
             }
 
-            if (section == VANTAQ_SECTION_NETWORK_ACCESS && has_active_network_subnet_list) {
+            if (section == VANTAQ_SECTION_NETWORK_ACCESS && indent == 4 &&
+                has_active_network_subnet_list) {
                 rc = parse_list_item(loader, cursor + 1, &tmp->allowed_subnets,
                                      "network_access.allowed_subnets");
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
@@ -828,12 +991,77 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 continue;
             }
 
+            if (section == VANTAQ_SECTION_VERIFIERS && indent == 2) {
+                char *verifier_cursor;
+                char *verifier_colon;
+                char *verifier_key;
+                char *verifier_value;
+                struct vantaq_verifier_config *verifier;
+
+                if (tmp->verifiers_count >= VANTAQ_MAX_LIST_ITEMS) {
+                    loader_set_error(loader, "too many verifiers");
+                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                }
+
+                verifier = &tmp->verifiers[tmp->verifiers_count];
+                VANTAQ_ZERO_STRUCT(*verifier);
+                tmp->verifiers_count++;
+                has_active_verifier                   = true;
+                active_verifier_index                 = tmp->verifiers_count - 1;
+                has_active_verifier_roles_list        = false;
+                has_active_verifier_allowed_apis_list = false;
+
+                verifier_cursor = trim(cursor + 1);
+                if (verifier_cursor[0] == '\0') {
+                    continue;
+                }
+
+                verifier_colon = strchr(verifier_cursor, ':');
+                if (verifier_colon == NULL) {
+                    loader_set_error(loader, "invalid verifier entry");
+                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                }
+
+                *verifier_colon = '\0';
+                verifier_key    = trim(verifier_cursor);
+                verifier_value  = trim(verifier_colon + 1);
+
+                rc = parse_verifier_field(loader, verifier, verifier_key, verifier_value,
+                                          &has_active_verifier_roles_list,
+                                          &has_active_verifier_allowed_apis_list);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            if (section == VANTAQ_SECTION_VERIFIERS && indent == 6 && has_active_verifier) {
+                struct vantaq_verifier_config *verifier = &tmp->verifiers[active_verifier_index];
+                if (has_active_verifier_roles_list) {
+                    rc = parse_list_item(loader, cursor + 1, &verifier->roles, "verifiers.roles");
+                    if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                        return rc;
+                    }
+                    continue;
+                }
+                if (has_active_verifier_allowed_apis_list) {
+                    rc = parse_list_item(loader, cursor + 1, &verifier->allowed_apis,
+                                         "verifiers.allowed_apis");
+                    if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                        return rc;
+                    }
+                    continue;
+                }
+            }
+
             loader_set_error(loader, "invalid list indentation");
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
-        has_active_capability_list     = false;
-        has_active_network_subnet_list = false;
+        has_active_capability_list            = false;
+        has_active_network_subnet_list        = false;
+        has_active_verifier_roles_list        = false;
+        has_active_verifier_allowed_apis_list = false;
 
         colon = strchr(cursor, ':');
         if (colon == NULL) {
@@ -852,7 +1080,11 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
 
             if (strcmp(key, "service") == 0) {
-                section                        = VANTAQ_SECTION_SERVICE;
+                loader_set_error(loader, "unknown top-level key %s", key);
+                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            }
+            if (strcmp(key, "server") == 0) {
+                section                        = VANTAQ_SECTION_SERVER;
                 has_active_capability_list     = false;
                 has_active_network_subnet_list = false;
                 continue;
@@ -881,20 +1113,37 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 has_active_network_subnet_list = false;
                 continue;
             }
+            if (strcmp(key, "verifiers") == 0) {
+                section                        = VANTAQ_SECTION_VERIFIERS;
+                has_active_verifier            = false;
+                tmp->has_verifiers             = true;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
+                continue;
+            }
 
             loader_set_error(loader, "unknown top-level key %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
-        if (indent != 2) {
+        if (section == VANTAQ_SECTION_SERVER_TLS && indent == 2) {
+            section = VANTAQ_SECTION_SERVER;
+        }
+
+        if (section == VANTAQ_SECTION_SERVER_TLS && indent != 4) {
+            loader_set_error(loader, "unsupported yaml indentation");
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+        if (section != VANTAQ_SECTION_SERVER_TLS && section != VANTAQ_SECTION_VERIFIERS &&
+            indent != 2) {
             loader_set_error(loader, "unsupported yaml indentation");
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
-        if (section == VANTAQ_SECTION_SERVICE) {
-            if (strcmp(key, "listen_host") == 0) {
+        if (section == VANTAQ_SECTION_SERVER) {
+            if (strcmp(key, "listen_address") == 0) {
                 rc = copy_string_to_field(
-                    loader, "service.listen_host", value, tmp->service_listen_host,
+                    loader, "server.listen_address", value, tmp->service_listen_host,
                     sizeof(tmp->service_listen_host), &tmp->has_service_listen_host);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
                     return rc;
@@ -902,7 +1151,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 continue;
             }
             if (strcmp(key, "listen_port") == 0) {
-                rc = parse_int(loader, "service.listen_port", value, &tmp->service_listen_port,
+                rc = parse_int(loader, "server.listen_port", value, &tmp->service_listen_port,
                                &tmp->has_service_listen_port);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
                     return rc;
@@ -910,15 +1159,73 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 continue;
             }
             if (strcmp(key, "version") == 0) {
-                rc = copy_string_to_field(loader, "service.version", value, tmp->service_version,
+                rc = copy_string_to_field(loader, "server.version", value, tmp->service_version,
                                           sizeof(tmp->service_version), &tmp->has_service_version);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
                     return rc;
                 }
                 continue;
             }
+            if (strcmp(key, "tls") == 0) {
+                if (value[0] != '\0') {
+                    loader_set_error(loader, "server.tls must be an object");
+                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                }
+                section = VANTAQ_SECTION_SERVER_TLS;
+                continue;
+            }
 
-            loader_set_error(loader, "unknown service field %s", key);
+            loader_set_error(loader, "unknown server field %s", key);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+
+        if (section == VANTAQ_SECTION_SERVER_TLS) {
+            if (strcmp(key, "enabled") == 0) {
+                rc = parse_bool(loader, "server.tls.enabled", value, &tmp->tls_enabled,
+                                &tmp->has_tls_enabled);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "server_cert_path") == 0) {
+                rc = copy_string_to_field(
+                    loader, "server.tls.server_cert_path", value, tmp->tls_server_cert_path,
+                    sizeof(tmp->tls_server_cert_path), &tmp->has_tls_server_cert_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "server_key_path") == 0) {
+                rc = copy_string_to_field(
+                    loader, "server.tls.server_key_path", value, tmp->tls_server_key_path,
+                    sizeof(tmp->tls_server_key_path), &tmp->has_tls_server_key_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "trusted_client_ca_path") == 0) {
+                rc = copy_string_to_field(loader, "server.tls.trusted_client_ca_path", value,
+                                          tmp->tls_trusted_client_ca_path,
+                                          sizeof(tmp->tls_trusted_client_ca_path),
+                                          &tmp->has_tls_trusted_client_ca_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "require_client_cert") == 0) {
+                rc = parse_bool(loader, "server.tls.require_client_cert", value,
+                                &tmp->tls_require_client_cert, &tmp->has_tls_require_client_cert);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown server.tls field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -1057,6 +1364,23 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
+        if (section == VANTAQ_SECTION_VERIFIERS) {
+            struct vantaq_verifier_config *verifier;
+            if (indent != 4 || !has_active_verifier ||
+                active_verifier_index >= tmp->verifiers_count) {
+                loader_set_error(loader, "invalid verifier field indentation");
+                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            }
+
+            verifier = &tmp->verifiers[active_verifier_index];
+            rc = parse_verifier_field(loader, verifier, key, value, &has_active_verifier_roles_list,
+                                      &has_active_verifier_allowed_apis_list);
+            if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                return rc;
+            }
+            continue;
+        }
+
         loader_set_error(loader, "field found outside section");
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
@@ -1167,6 +1491,50 @@ const char *vantaq_runtime_service_version(const struct vantaq_runtime_config *c
     return config->service_version;
 }
 
+bool vantaq_runtime_tls_enabled(const struct vantaq_runtime_config *config) {
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, tls_enabled) +
+                                               sizeof(config->tls_enabled)) {
+        return false;
+    }
+    return config->tls_enabled;
+}
+
+const char *vantaq_runtime_tls_server_cert_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, tls_server_cert_path) +
+                             sizeof(config->tls_server_cert_path)) {
+        return "";
+    }
+    return config->tls_server_cert_path;
+}
+
+const char *vantaq_runtime_tls_server_key_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, tls_server_key_path) +
+                             sizeof(config->tls_server_key_path)) {
+        return "";
+    }
+    return config->tls_server_key_path;
+}
+
+const char *vantaq_runtime_tls_trusted_client_ca_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, tls_trusted_client_ca_path) +
+                             sizeof(config->tls_trusted_client_ca_path)) {
+        return "";
+    }
+    return config->tls_trusted_client_ca_path;
+}
+
+bool vantaq_runtime_tls_require_client_cert(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, tls_require_client_cert) +
+                             sizeof(config->tls_require_client_cert)) {
+        return false;
+    }
+    return config->tls_require_client_cert;
+}
+
 const char *vantaq_runtime_device_id(const struct vantaq_runtime_config *config) {
     if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, device_id) +
                                                sizeof(config->device_id)) {
@@ -1271,4 +1639,81 @@ const char *vantaq_runtime_audit_log_path(const struct vantaq_runtime_config *co
         return "";
     }
     return config->audit_log_path;
+}
+
+size_t vantaq_runtime_verifier_count(const struct vantaq_runtime_config *config) {
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, verifiers_count) +
+                                               sizeof(config->verifiers_count)) {
+        return 0;
+    }
+    return config->verifiers_count;
+}
+
+const char *vantaq_runtime_verifier_id(const struct vantaq_runtime_config *config, size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    return config->verifiers[index].verifier_id;
+}
+
+const char *vantaq_runtime_verifier_cert_subject_cn(const struct vantaq_runtime_config *config,
+                                                    size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    return config->verifiers[index].cert_subject_cn;
+}
+
+const char *vantaq_runtime_verifier_cert_san_uri(const struct vantaq_runtime_config *config,
+                                                 size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    return config->verifiers[index].cert_san_uri;
+}
+
+const char *vantaq_runtime_verifier_status(const struct vantaq_runtime_config *config,
+                                           size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    return config->verifiers[index].status;
+}
+
+size_t vantaq_runtime_verifier_role_count(const struct vantaq_runtime_config *config,
+                                          size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return 0;
+    }
+    return config->verifiers[index].roles.count;
+}
+
+const char *vantaq_runtime_verifier_role_item(const struct vantaq_runtime_config *config,
+                                              size_t verifier_index, size_t role_index) {
+    if (config == NULL || verifier_index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    if (role_index >= config->verifiers[verifier_index].roles.count) {
+        return NULL;
+    }
+    return config->verifiers[verifier_index].roles.items[role_index];
+}
+
+size_t vantaq_runtime_verifier_allowed_api_count(const struct vantaq_runtime_config *config,
+                                                 size_t index) {
+    if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
+        return 0;
+    }
+    return config->verifiers[index].allowed_apis.count;
+}
+
+const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime_config *config,
+                                                     size_t verifier_index, size_t api_index) {
+    if (config == NULL || verifier_index >= vantaq_runtime_verifier_count(config)) {
+        return NULL;
+    }
+    if (api_index >= config->verifiers[verifier_index].allowed_apis.count) {
+        return NULL;
+    }
+    return config->verifiers[verifier_index].allowed_apis.items[api_index];
 }

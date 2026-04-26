@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: docker/device/Dockerfile
-    environment:
-      VANTAQ_TLS_ENABLED: "true"
     ports:
       - "8443:8443"
     volumes:

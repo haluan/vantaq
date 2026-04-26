@@ -22,10 +22,29 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /etc/vantaqd \
     && cat > /etc/vantaqd/vantaqd.yaml <<'YAML'
-service:
-  listen_host: 0.0.0.0
+server:
+  listen_address: 0.0.0.0
   listen_port: 8443
   version: 0.1.0
+  tls:
+    enabled: true
+    server_cert_path: /etc/vantaqd/certs/device-server.crt
+    server_key_path: /etc/vantaqd/certs/device-server.key
+    trusted_client_ca_path: /etc/vantaqd/certs/verifier-ca.crt
+    require_client_cert: true
+
+verifiers:
+  - verifier_id: govt-verifier-01
+    cert_subject_cn: govt-verifier-01
+    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01
+    status: active
+    roles:
+      - verifier
+    allowed_apis:
+      - GET /v1/health
+      - GET /v1/device/identity
+      - GET /v1/device/capabilities
+      - GET /v1/security/verifiers/{verifier_id}
 
 device_identity:
   device_id: edge-gw-001
@@ -45,6 +64,10 @@ capabilities:
 network_access:
   allowed_subnets: []
   dev_allow_all_networks: true
+
+audit:
+  max_bytes: 65536
+  path: /var/lib/vantaqd/audit.log
 YAML
 
 COPY --from=builder /workspace/bin/vantaqd /usr/local/bin/vantaqd
