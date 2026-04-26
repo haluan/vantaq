@@ -22,3 +22,7 @@ network_access:
   allowed_subnets:
     - 10.50.10.0/24
   dev_allow_all_networks: false
+
+audit:
+  max_bytes: 65536
+  path: /var/lib/vantaqd/audit.log

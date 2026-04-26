@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #define VANTAQ_AUDIT_MAX_LINE_LEN 2048
 
 struct vantaq_audit_log {
+    pthread_mutex_t mutex;
     char *path;
     size_t max_bytes;
     char last_error[VANTAQ_AUDIT_MAX_ERROR_LEN];
@@ -114,10 +116,22 @@ static int append_json_escaped(char *buf, size_t buf_size, size_t *used, const c
 }
 
 static enum vantaq_audit_log_status validate_event(const struct vantaq_audit_event *event) {
-    if (event == NULL || event->source_ip == NULL || event->method == NULL || event->path == NULL ||
-        event->result == NULL || event->reason == NULL || event->source_ip[0] == '\0' ||
-        event->method[0] == '\0' || event->path[0] == '\0' || event->result[0] == '\0' ||
-        event->reason[0] == '\0') {
+    time_t now;
+
+    if (event == NULL || event->cbSize < sizeof(struct vantaq_audit_event) ||
+        event->source_ip == NULL || event->method == NULL || event->path == NULL ||
+        event->result == NULL || event->reason == NULL || event->request_id == NULL ||
+        event->source_ip[0] == '\0' || event->method[0] == '\0' || event->path[0] == '\0' ||
+        event->result[0] == '\0' || event->reason[0] == '\0' || event->request_id[0] == '\0') {
+        return VANTAQ_AUDIT_LOG_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (event->time_utc_epoch_seconds <= 0) {
+        return VANTAQ_AUDIT_LOG_STATUS_INVALID_ARGUMENT;
+    }
+
+    now = time(NULL);
+    if (event->time_utc_epoch_seconds > now + 300) {
         return VANTAQ_AUDIT_LOG_STATUS_INVALID_ARGUMENT;
     }
 
@@ -162,6 +176,12 @@ enum vantaq_audit_log_status vantaq_audit_log_create(const char *path, size_t ma
         return VANTAQ_AUDIT_LOG_STATUS_OUT_OF_MEMORY;
     }
     memcpy(log->path, path, len + 1);
+    if (pthread_mutex_init(&log->mutex, NULL) != 0) {
+        free(log->path);
+        free(log);
+        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+    }
+
     log->max_bytes     = max_bytes;
     log->last_error[0] = '\0';
 
@@ -174,6 +194,7 @@ void vantaq_audit_log_destroy(struct vantaq_audit_log *log) {
         return;
     }
 
+    (void)pthread_mutex_destroy(&log->mutex);
     free(log->path);
     log->path = NULL;
     free(log);
@@ -193,9 +214,6 @@ vantaq_audit_log_serialize_event(const struct vantaq_audit_event *event, char *o
     }
 
     event_time = event->time_utc_epoch_seconds;
-    if (event_time <= 0) {
-        event_time = time(NULL);
-    }
 
     if (gmtime_r(&event_time, &tm_utc) == NULL ||
         strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc) == 0) {
@@ -215,6 +233,8 @@ vantaq_audit_log_serialize_event(const struct vantaq_audit_event *event, char *o
         append_json_escaped(out_line, out_line_size, &used, event->result) != 0 ||
         appendf(out_line, out_line_size, &used, "\",\"reason\":\"") != 0 ||
         append_json_escaped(out_line, out_line_size, &used, event->reason) != 0 ||
+        appendf(out_line, out_line_size, &used, "\",\"request_id\":\"") != 0 ||
+        append_json_escaped(out_line, out_line_size, &used, event->request_id) != 0 ||
         appendf(out_line, out_line_size, &used, "\"}\n") != 0) {
         return VANTAQ_AUDIT_LOG_STATUS_FORMAT_ERROR;
     }
@@ -226,7 +246,7 @@ enum vantaq_audit_log_status vantaq_audit_log_append(struct vantaq_audit_log *lo
                                                      const struct vantaq_audit_event *event) {
     char line[VANTAQ_AUDIT_MAX_LINE_LEN];
     struct stat st;
-    int fd;
+    int fd = -1;
     enum vantaq_audit_log_status status;
     size_t line_len;
 
@@ -246,43 +266,66 @@ enum vantaq_audit_log_status vantaq_audit_log_append(struct vantaq_audit_log *lo
         return VANTAQ_AUDIT_LOG_STATUS_FORMAT_ERROR;
     }
 
-    fd = open(log->path, O_CREAT | O_RDWR, 0644);
+    if (pthread_mutex_lock(&log->mutex) != 0) {
+        set_error(log, "failed to lock mutex");
+        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+    }
+
+    fd = open(log->path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) {
         set_error(log, "open failed for %s: %s", log->path, strerror(errno));
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        goto cleanup;
     }
 
     if (fstat(fd, &st) != 0) {
         set_error(log, "fstat failed for %s: %s", log->path, strerror(errno));
-        (void)close(fd);
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        goto cleanup;
     }
 
-    if ((size_t)st.st_size + line_len > log->max_bytes) {
-        if (ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) < 0) {
-            set_error(log, "truncate failed for %s: %s", log->path, strerror(errno));
-            (void)close(fd);
-            return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+    if (!S_ISREG(st.st_mode)) {
+        set_error(log, "not a regular file: %s", log->path);
+        status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        goto cleanup;
+    }
+
+    if (st.st_size < 0 || (size_t)st.st_size > log->max_bytes - line_len) {
+        char bak_path[VANTAQ_AUDIT_MAX_LINE_LEN]; // Reuse max line len for path buffer safety
+
+        (void)close(fd);
+        fd = -1;
+
+        (void)snprintf(bak_path, sizeof(bak_path), "%s.bak", log->path);
+        (void)rename(log->path, bak_path);
+
+        fd = open(log->path, O_CREAT | O_RDWR | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+        if (fd < 0) {
+            set_error(log, "open failed after rotate for %s: %s", log->path, strerror(errno));
+            status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+            goto cleanup;
         }
     } else if (lseek(fd, 0, SEEK_END) < 0) {
         set_error(log, "seek failed for %s: %s", log->path, strerror(errno));
-        (void)close(fd);
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        goto cleanup;
     }
 
     status = write_all(fd, line, line_len);
     if (status != VANTAQ_AUDIT_LOG_STATUS_OK) {
         set_error(log, "write failed for %s: %s", log->path, strerror(errno));
-        (void)close(fd);
-        return status;
+        goto cleanup;
     }
 
-    if (close(fd) != 0) {
-        set_error(log, "close failed for %s: %s", log->path, strerror(errno));
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+cleanup:
+    if (fd >= 0) {
+        if (close(fd) != 0) {
+            set_error(log, "close failed for %s: %s", log->path, strerror(errno));
+            status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        }
     }
-
-    return VANTAQ_AUDIT_LOG_STATUS_OK;
+    (void)pthread_mutex_unlock(&log->mutex);
+    return status;
 }
 
 const char *vantaq_audit_log_last_error(const struct vantaq_audit_log *log) {

@@ -4,6 +4,7 @@
 #ifndef VANTAQ_INFRASTRUCTURE_HTTP_SERVER_H
 #define VANTAQ_INFRASTRUCTURE_HTTP_SERVER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef int (*vantaq_http_log_fn)(void *ctx, const char *text);
@@ -39,7 +40,7 @@ struct vantaq_http_server_options {
     size_t storage_modes_count;
     const char *const *allowed_subnets;
     size_t allowed_subnets_count;
-    int dev_allow_all_networks;
+    bool dev_allow_all_networks;
     const char *audit_log_path;
     size_t audit_log_max_bytes;
     vantaq_http_log_fn write_out;

@@ -473,7 +473,7 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     assert_non_null(strstr(identity_body, "\"code\":\"SUBNET_NOT_ALLOWED\""));
     assert_non_null(
         strstr(identity_body, "\"message\":\"Requester source network is not allowed.\""));
-    assert_non_null(strstr(identity_body, "\"request_id\":\"req-000001\""));
+    assert_non_null(strstr(identity_body, "\"request_id\":\"req-000002\""));
     assert_null(strstr(identity_body, "\"device_id\":"));
     assert_null(strstr(identity_body, "\"model\":"));
     assert_null(strstr(identity_body, "\"serial_number\":"));
@@ -495,6 +495,8 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     assert_non_null(strstr(audit_text, "\"path\":\"/v1/health\""));
     assert_non_null(strstr(audit_text, "\"result\":\"DENY\""));
     assert_non_null(strstr(audit_text, "\"reason\":\"SUBNET_NOT_ALLOWED\""));
+    assert_non_null(strstr(audit_text, "\"request_id\":\"req-000001\""));
+    assert_non_null(strstr(audit_text, "\"request_id\":\"req-000002\""));
     assert_non_null(strstr(audit_text, "\"time\":\""));
 
     assert_int_equal(kill(child, SIGTERM), 0);

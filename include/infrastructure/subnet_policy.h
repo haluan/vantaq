@@ -6,11 +6,13 @@
 
 #include "infrastructure/socket_peer.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
 enum vantaq_subnet_policy_status {
     VANTAQ_SUBNET_POLICY_STATUS_OK = 0,
     VANTAQ_SUBNET_POLICY_STATUS_INVALID_ARGUMENT,
+    VANTAQ_SUBNET_POLICY_STATUS_MALFORMED_CONFIG,
 };
 
 enum vantaq_subnet_policy_decision {
@@ -19,13 +21,13 @@ enum vantaq_subnet_policy_decision {
 };
 
 struct vantaq_subnet_policy_input {
-    const char *method;
-    const char *path;
+    size_t cbSize;
+    bool is_protected;
     enum vantaq_peer_address_status peer_status;
     const char *peer_ipv4;
     const char *const *allowed_subnets;
     size_t allowed_subnets_count;
-    int dev_allow_all_networks;
+    bool dev_allow_all_networks;
 };
 
 enum vantaq_subnet_policy_status

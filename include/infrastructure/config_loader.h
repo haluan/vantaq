@@ -37,6 +37,8 @@ struct vantaq_runtime_config {
     struct vantaq_string_list storage_modes;
     struct vantaq_string_list allowed_subnets;
     bool dev_allow_all_networks;
+    size_t audit_log_max_bytes;
+    char audit_log_path[VANTAQ_MAX_FIELD_LEN];
 
     bool has_service_listen_host;
     bool has_service_listen_port;
@@ -53,6 +55,8 @@ struct vantaq_runtime_config {
     bool has_storage_modes;
     bool has_allowed_subnets;
     bool has_dev_allow_all_networks;
+    bool has_audit_log_max_bytes;
+    bool has_audit_log_path;
 };
 
 enum vantaq_config_status {
@@ -103,6 +107,8 @@ const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *c
 size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config,
                                                size_t index);
-int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
+bool vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_audit_log_max_bytes(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_audit_log_path(const struct vantaq_runtime_config *config);
 
 #endif

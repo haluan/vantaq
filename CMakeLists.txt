@@ -28,6 +28,10 @@ else()
   target_compile_options(vantaq_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+if(NOT MSVC)
+  target_compile_definitions(vantaq_core PRIVATE _GNU_SOURCE)
+endif()
+
 add_executable(vantaqd src/main.c)
 target_link_libraries(vantaqd PRIVATE vantaq_core)
 set_target_properties(vantaqd PROPERTIES

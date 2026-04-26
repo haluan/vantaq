@@ -24,6 +24,7 @@ enum vantaq_section {
     VANTAQ_SECTION_DEVICE_IDENTITY,
     VANTAQ_SECTION_CAPABILITIES,
     VANTAQ_SECTION_NETWORK_ACCESS,
+    VANTAQ_SECTION_AUDIT,
 };
 
 struct vantaq_config_loader {
@@ -393,6 +394,49 @@ static enum vantaq_config_status parse_int(struct vantaq_config_loader *loader,
     }
 
     *out  = (int)number;
+    *seen = true;
+    return VANTAQ_CONFIG_STATUS_OK;
+}
+
+static enum vantaq_config_status parse_size_t(struct vantaq_config_loader *loader,
+                                              const char *field_name, const char *value_raw,
+                                              size_t *out, bool *seen) {
+    char *endptr;
+    unsigned long long number;
+    char local[VANTAQ_MAX_FIELD_LEN];
+    size_t len;
+
+    VANTAQ_ZERO_STRUCT(local);
+
+    if (value_raw == NULL || out == NULL || seen == NULL) {
+        return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (*seen) {
+        loader_set_error(loader, "duplicate field %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    len = strlen(value_raw);
+    if (len >= sizeof(local)) {
+        loader_set_error(loader, "value too long for %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    memcpy(local, value_raw, len + 1);
+    trim(local);
+    if (local[0] == '\0') {
+        loader_set_error(loader, "missing value for %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    number = strtoull(local, &endptr, 10);
+    if (*endptr != '\0' || number == 0) {
+        loader_set_error(loader, "invalid size for %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    *out  = (size_t)number;
     *seen = true;
     return VANTAQ_CONFIG_STATUS_OK;
 }
@@ -831,6 +875,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 has_active_network_subnet_list = false;
                 continue;
             }
+            if (strcmp(key, "audit") == 0) {
+                section                        = VANTAQ_SECTION_AUDIT;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
+                continue;
+            }
 
             loader_set_error(loader, "unknown top-level key %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
@@ -982,6 +1032,28 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
 
             loader_set_error(loader, "unknown network_access field %s", key);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+
+        if (section == VANTAQ_SECTION_AUDIT) {
+            if (strcmp(key, "max_bytes") == 0) {
+                rc = parse_size_t(loader, "audit.max_bytes", value, &tmp->audit_log_max_bytes,
+                                  &tmp->has_audit_log_max_bytes);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "path") == 0) {
+                rc = copy_string_to_field(loader, "audit.path", value, tmp->audit_log_path,
+                                          sizeof(tmp->audit_log_path), &tmp->has_audit_log_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown audit field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -1175,11 +1247,28 @@ const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_confi
     return config->allowed_subnets.items[index];
 }
 
-int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config) {
+bool vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config) {
     if (config == NULL ||
         config->cbSize < offsetof(struct vantaq_runtime_config, dev_allow_all_networks) +
                              sizeof(config->dev_allow_all_networks)) {
+        return false;
+    }
+    return config->dev_allow_all_networks;
+}
+
+size_t vantaq_runtime_audit_log_max_bytes(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, audit_log_max_bytes) +
+                             sizeof(config->audit_log_max_bytes)) {
         return 0;
     }
-    return config->dev_allow_all_networks ? 1 : 0;
+    return config->audit_log_max_bytes;
+}
+
+const char *vantaq_runtime_audit_log_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, audit_log_path) +
+                                               sizeof(config->audit_log_path)) {
+        return "";
+    }
+    return config->audit_log_path;
 }

@@ -84,6 +84,8 @@ docker compose down
 
 ### Allowed-Subnet Health Check (T09)
 
+#### Via Local Make (Host Network)
+
 1. Run the canonical host command:
 
 ```bash
@@ -96,7 +98,29 @@ make integration-test-subnet-allowed
 PASS (HTTP 200 and health payload contains status=ok)
 ```
 
+#### Via Docker Compose (Allowed Network)
+
+1. Ensure the environment is up:
+
+```bash
+docker compose up -d device-1
+```
+
+2. Run curl from the `allowed-verifier` container:
+
+```bash
+docker compose run --rm allowed-verifier http://10.50.10.10:8080/v1/health
+```
+
+3. Expected result:
+
+```text
+PASS (HTTP 200)
+```
+
 ### Denied-Subnet Health Check (T10)
+
+#### Via Local Make (Host Network)
 
 1. Run the canonical host command:
 
@@ -108,4 +132,24 @@ make integration-test-subnet-denied
 
 ```text
 PASS (HTTP 403 and error payload contains SUBNET_NOT_ALLOWED)
+```
+
+#### Via Docker Compose (Denied Network)
+
+1. Ensure the environment is up:
+
+```bash
+docker compose up -d device-1
+```
+
+2. Run curl from the `rogue-verifier` container:
+
+```bash
+docker compose run --rm rogue-verifier http://10.60.10.10:8080/v1/health
+```
+
+3. Expected result:
+
+```text
+FAIL/DENIED (HTTP 403)
 ```

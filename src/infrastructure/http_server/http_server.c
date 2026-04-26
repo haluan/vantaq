@@ -16,13 +16,16 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
 #define VANTAQ_HTTP_REQ_BUF_SIZE 2048
+#define VANTAQ_HTTP_RECV_TIMEOUT_SECONDS 5
 
 static volatile sig_atomic_t g_stop_requested = 0;
 static volatile int g_listener_fd             = -1;
@@ -60,7 +63,7 @@ struct vantaq_http_health_context {
     size_t storage_modes_count;
     const char *const *allowed_subnets;
     size_t allowed_subnets_count;
-    int dev_allow_all_networks;
+    bool dev_allow_all_networks;
     struct vantaq_audit_log *audit_log;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
@@ -134,26 +137,37 @@ static int send_status_response(int fd, int status_code) {
     return write_all(fd, response, (size_t)n);
 }
 
-static int send_subnet_denied_response(int fd) {
-    static const char json_body[] = "{\"error\":{\"code\":\"SUBNET_NOT_ALLOWED\","
-                                    "\"message\":\"Requester source network is not allowed.\","
-                                    "\"request_id\":\"req-000001\"}}\n";
+static int send_subnet_denied_response(int fd, const char *request_id) {
+    char json_body[256];
     char response[512];
-    int n;
+    int n_body, n_resp;
 
-    n = snprintf(response, sizeof(response),
-                 "HTTP/1.1 403 Forbidden\r\n"
-                 "Content-Type: application/json\r\n"
-                 "Content-Length: %zu\r\n"
-                 "Connection: close\r\n"
-                 "\r\n"
-                 "%s",
-                 strlen(json_body), json_body);
-    if (n <= 0 || (size_t)n >= sizeof(response)) {
+    if (request_id == NULL) {
+        request_id = "unknown";
+    }
+
+    n_body = snprintf(json_body, sizeof(json_body),
+                      "{\"error\":{\"code\":\"SUBNET_NOT_ALLOWED\","
+                      "\"message\":\"Requester source network is not allowed.\","
+                      "\"request_id\":\"%s\"}}\n",
+                      request_id);
+    if (n_body <= 0 || (size_t)n_body >= sizeof(json_body)) {
         return -1;
     }
 
-    return write_all(fd, response, (size_t)n);
+    n_resp = snprintf(response, sizeof(response),
+                      "HTTP/1.1 403 Forbidden\r\n"
+                      "Content-Type: application/json\r\n"
+                      "Content-Length: %d\r\n"
+                      "Connection: close\r\n"
+                      "\r\n"
+                      "%s",
+                      n_body, json_body);
+    if (n_resp <= 0 || (size_t)n_resp >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)n_resp);
 }
 
 static long long elapsed_seconds_since(const struct timespec *started_at) {
@@ -371,15 +385,11 @@ static int send_identity_response(int fd, const struct vantaq_http_health_contex
 }
 
 static int send_capabilities_response(int fd, const struct vantaq_http_health_context *ctx) {
-    // Note: This buffer can be large (up to ~240KB with 64 items of 128 chars).
-    // In a production environment, dynamic allocation might be preferred.
-    static char json[VANTAQ_CAPABILITIES_JSON_BUF_SIZE];
+    char *json;
     char response_header[512];
     size_t used = 0;
-
-    VANTAQ_ZERO_STRUCT(response_header);
-    // static json is zeroed by default, but we should clear it for safety if reused
-    memset(json, 0, sizeof(json));
+    int header_n, json_n;
+    int result = 0;
 
     if (ctx == NULL || ctx->supported_claims == NULL || ctx->signature_algorithms == NULL ||
         ctx->evidence_formats == NULL || ctx->challenge_modes == NULL ||
@@ -387,73 +397,106 @@ static int send_capabilities_response(int fd, const struct vantaq_http_health_co
         return -1;
     }
 
-    if (append_jsonf(json, sizeof(json), &used, "{") != 0 ||
-        append_json_string_array(json, sizeof(json), &used, "supported_claims",
-                                 ctx->supported_claims, ctx->supported_claims_count, true) != 0 ||
-        append_json_string_array(json, sizeof(json), &used, "signature_algorithms",
-                                 ctx->signature_algorithms, ctx->signature_algorithms_count,
-                                 true) != 0 ||
-        append_json_string_array(json, sizeof(json), &used, "evidence_formats",
-                                 ctx->evidence_formats, ctx->evidence_formats_count, true) != 0 ||
-        append_json_string_array(json, sizeof(json), &used, "challenge_modes", ctx->challenge_modes,
-                                 ctx->challenge_modes_count, true) != 0 ||
-        append_json_string_array(json, sizeof(json), &used, "storage_modes", ctx->storage_modes,
-                                 ctx->storage_modes_count, false) != 0 ||
-        append_jsonf(json, sizeof(json), &used, "}\n") != 0) {
+    json = (char *)malloc(VANTAQ_CAPABILITIES_JSON_BUF_SIZE);
+    if (json == NULL) {
         return -1;
     }
 
-    int json_n   = (int)used;
-    int header_n = snprintf(response_header, sizeof(response_header),
-                            "HTTP/1.1 200 OK\r\n"
-                            "Content-Type: application/json\r\n"
-                            "Content-Length: %d\r\n"
-                            "Connection: close\r\n"
-                            "\r\n",
-                            json_n);
+    VANTAQ_ZERO_STRUCT(response_header);
+    json[0] = '\0';
+
+    if (append_jsonf(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "{") != 0 ||
+        append_json_string_array(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "supported_claims",
+                                 ctx->supported_claims, ctx->supported_claims_count, true) != 0 ||
+        append_json_string_array(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used,
+                                 "signature_algorithms", ctx->signature_algorithms,
+                                 ctx->signature_algorithms_count, true) != 0 ||
+        append_json_string_array(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "evidence_formats",
+                                 ctx->evidence_formats, ctx->evidence_formats_count, true) != 0 ||
+        append_json_string_array(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "challenge_modes",
+                                 ctx->challenge_modes, ctx->challenge_modes_count, true) != 0 ||
+        append_json_string_array(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "storage_modes",
+                                 ctx->storage_modes, ctx->storage_modes_count, false) != 0 ||
+        append_jsonf(json, VANTAQ_CAPABILITIES_JSON_BUF_SIZE, &used, "}\n") != 0) {
+        free(json);
+        return -1;
+    }
+
+    json_n   = (int)used;
+    header_n = snprintf(response_header, sizeof(response_header),
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n"
+                        "\r\n",
+                        json_n);
 
     if (header_n <= 0 || (size_t)header_n >= sizeof(response_header)) {
+        free(json);
         return -1;
     }
 
     if (write_all(fd, response_header, (size_t)header_n) != 0) {
+        free(json);
         return -1;
     }
 
-    return write_all(fd, json, (size_t)json_n);
+    result = write_all(fd, json, (size_t)json_n);
+    free(json);
+    return result;
 }
 
 static int parse_request_line(const char *buf, char *method, size_t method_size, char *path,
                               size_t path_size) {
-    (void)method_size;
-    (void)path_size;
-    // We use sscanf to parse without mutating the input buffer.
-    // This preserves the raw request for diagnostic logging if needed.
-    if (sscanf(buf, "%15s %255s", method, path) != 2) {
+    char fmt[32];
+
+    if (method == NULL || method_size == 0 || path == NULL || path_size == 0) {
+        return -1;
+    }
+
+    // We dynamically construct the sscanf format string using the provided buffer sizes
+    // to prevent overflows if the caller ever changes the buffer definitions.
+    // method_size - 1 and path_size - 1 account for the NUL terminator.
+    const char *const sscanf_fmt_template = "%%%zus %%%zus";
+    if (snprintf(fmt, sizeof(fmt), sscanf_fmt_template, method_size - 1, path_size - 1) <= 0) {
+        return -1;
+    }
+
+    if (sscanf(buf, fmt, method, path) != 2) {
         return -1;
     }
 
     return 0;
 }
 
-static int route_status_code(const char *method, const char *path) {
+static int get_route_info(const char *method, const char *path, bool *is_protected) {
+    if (is_protected != NULL) {
+        *is_protected = false;
+    }
+
     if (strcmp(path, "/v1/health") == 0) {
-        if (strcmp(method, "GET") != 0) {
-            return 405;
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
         }
-        return 200;
+        return 405;
     }
+
     if (strcmp(path, "/v1/device/identity") == 0) {
-        if (strcmp(method, "GET") != 0) {
-            return 405;
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
         }
-        return 200;
+        return 405;
     }
+
     if (strcmp(path, "/v1/device/capabilities") == 0) {
-        if (strcmp(method, "GET") != 0) {
-            return 405;
-        }
-        return 200;
+        // Capabilities is public metadata, not protected by default
+        return (strcmp(method, "GET") == 0) ? 200 : 405;
     }
 
     return 404;
@@ -464,13 +507,14 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     size_t total_read = 0;
     char method[16];
     char path[256];
-    char log_buf[192];
+    char log_buf[512];
     struct vantaq_http_request_context request_ctx;
     struct vantaq_subnet_policy_input subnet_input;
     enum vantaq_subnet_policy_decision subnet_decision;
     enum vantaq_subnet_policy_status subnet_status;
     enum vantaq_audit_log_status audit_status;
     int status_code;
+    struct timeval tv;
 
     VANTAQ_ZERO_STRUCT(req_buf);
     VANTAQ_ZERO_STRUCT(method);
@@ -483,13 +527,24 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
                                                            sizeof(request_ctx.peer_ipv4));
     request_ctx.peer_ip_ok  = (request_ctx.peer_status == VANTAQ_PEER_ADDRESS_STATUS_OK);
 
+    tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
+    tv.tv_usec = 0;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        goto cleanup;
+    }
+
     while (total_read < sizeof(req_buf) - 1) {
         ssize_t n = recv(client_fd, req_buf + total_read, sizeof(req_buf) - 1 - total_read, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            return;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                (void)snprintf(log_buf, sizeof(log_buf), "http server: recv timeout from %s\n",
+                               request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : "unknown");
+                (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+            }
+            goto cleanup;
         }
         if (n == 0) {
             break;
@@ -503,16 +558,16 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     }
 
     if (total_read == 0) {
-        return;
+        goto cleanup;
     }
 
     if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
         (void)send_status_response(client_fd, 400);
-        return;
+        goto cleanup;
     }
 
-    subnet_input.method                 = method;
-    subnet_input.path                   = path;
+    subnet_input.cbSize                 = sizeof(subnet_input);
+    status_code                         = get_route_info(method, path, &subnet_input.is_protected);
     subnet_input.peer_status            = request_ctx.peer_status;
     subnet_input.peer_ipv4              = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : NULL;
     subnet_input.allowed_subnets        = health_ctx->allowed_subnets;
@@ -523,24 +578,31 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     if (subnet_status != VANTAQ_SUBNET_POLICY_STATUS_OK) {
         (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet policy failed: %s\n",
                        vantaq_subnet_policy_status_text(subnet_status));
-        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+        (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
         (void)send_status_response(client_fd, 500);
-        return;
+        goto cleanup;
     }
 
     if (subnet_decision == VANTAQ_SUBNET_POLICY_DECISION_DENY) {
+        static uint64_t request_counter = 0;
+        char request_id[32];
         struct vantaq_audit_event audit_event;
         const char *peer_text = request_ctx.peer_ip_ok
                                     ? request_ctx.peer_ipv4
                                     : vantaq_peer_address_status_text(request_ctx.peer_status);
 
+        (void)snprintf(request_id, sizeof(request_id), "req-%06llu",
+                       (unsigned long long)++request_counter);
+
         VANTAQ_ZERO_STRUCT(audit_event);
+        audit_event.cbSize                 = sizeof(audit_event);
         audit_event.time_utc_epoch_seconds = time(NULL);
-        audit_event.source_ip = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : "unknown";
-        audit_event.method    = method;
-        audit_event.path      = path;
-        audit_event.result    = "DENY";
-        audit_event.reason    = "SUBNET_NOT_ALLOWED";
+        audit_event.source_ip  = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : "unknown";
+        audit_event.method     = method;
+        audit_event.path       = path;
+        audit_event.result     = "DENY";
+        audit_event.reason     = "SUBNET_NOT_ALLOWED";
+        audit_event.request_id = request_id;
 
         audit_status = vantaq_audit_log_append(health_ctx->audit_log, &audit_event);
         if (audit_status != VANTAQ_AUDIT_LOG_STATUS_OK) {
@@ -548,21 +610,20 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
             (void)snprintf(log_buf, sizeof(log_buf), "http server: audit append failed: %s (%s)\n",
                            vantaq_audit_log_status_text(audit_status),
                            last_error != NULL ? last_error : "unknown");
-            log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+            (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
         }
 
         (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet denied %s %s peer=%s\n",
                        method, path, peer_text);
-        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+        (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
 
-        if (send_subnet_denied_response(client_fd) != 0) {
-            log_text(health_ctx->err_logger, health_ctx->io_ctx,
-                     "http server: failed to send subnet denied response\n");
+        if (send_subnet_denied_response(client_fd, request_id) != 0) {
+            (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                           "http server: failed to send subnet denied response\n");
         }
-        return;
+        goto cleanup;
     }
 
-    status_code = route_status_code(method, path);
     if (status_code == 200) {
         int rc;
         if (strcmp(path, "/v1/device/identity") == 0) {
@@ -574,17 +635,20 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
         }
 
         if (rc != 0) {
-            log_text(health_ctx->err_logger, health_ctx->io_ctx,
-                     "http server: failed to send response\n");
+            (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                           "http server: failed to send response\n");
             (void)send_status_response(client_fd, 500);
         }
-        return;
+        goto cleanup;
     }
 
     if (send_status_response(client_fd, status_code) != 0) {
-        log_text(health_ctx->err_logger, health_ctx->io_ctx,
-                 "http server: failed to send status response\n");
+        (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                       "http server: failed to send status response\n");
     }
+
+cleanup:
+    return;
 }
 
 static int create_listener(const char *host, int port, vantaq_http_log_fn err_logger, void *ctx) {
@@ -687,7 +751,6 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (options->challenge_modes_count > 0 && options->challenge_modes == NULL) ||
         (options->storage_modes_count > 0 && options->storage_modes == NULL) ||
         (options->allowed_subnets_count > 0 && options->allowed_subnets == NULL) ||
-        (options->dev_allow_all_networks != 0 && options->dev_allow_all_networks != 1) ||
         options->audit_log_path == NULL || options->audit_log_path[0] == '\0' ||
         options->audit_log_max_bytes == 0) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;

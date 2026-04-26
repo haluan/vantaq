@@ -16,12 +16,14 @@ enum vantaq_audit_log_status {
 };
 
 struct vantaq_audit_event {
+    size_t cbSize;
     time_t time_utc_epoch_seconds;
     const char *source_ip;
     const char *method;
     const char *path;
     const char *result;
     const char *reason;
+    const char *request_id;
 };
 
 struct vantaq_audit_log;
