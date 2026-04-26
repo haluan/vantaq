@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-#include <cmocka.h>
-
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -10,9 +9,12 @@
 #include <string.h>
 #include <sys/wait.h>
 
+#include <cmocka.h>
+
 static void test_binary_starts_with_default_path(void **state) {
     (void)state;
-    int status = system("./bin/vantaqd >/dev/null 2>/dev/null");
+    int status =
+        system("./bin/vantaqd --config ./config/device-1/vantaqd.yaml >/dev/null 2>/dev/null");
 
     assert_true(WIFEXITED(status));
     assert_int_equal(WEXITSTATUS(status), 0);

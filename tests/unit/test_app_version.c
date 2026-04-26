@@ -3,12 +3,13 @@
 
 #include "application/app.h"
 
-#include <cmocka.h>
-
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <cmocka.h>
 
 typedef struct test_io_buffer {
     char out[256];
@@ -77,7 +78,7 @@ static void test_unknown_argument_returns_usage_error(void **state) {
 
     assert_int_equal(rc, 64);
     assert_string_equal(buffer->out, "");
-    assert_string_equal(buffer->err, "Usage: vantaqd [--version]\n");
+    assert_string_equal(buffer->err, "Usage: vantaqd [--version] [--config <path>]\n");
 }
 
 int main(void) {

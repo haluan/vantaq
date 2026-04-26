@@ -6,7 +6,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./config/device-1/vantaqd.json:/etc/vantaqd/vantaqd.json:ro
+      - ./config/device-1/vantaqd.yaml:/etc/vantaqd/vantaqd.yaml:ro
     networks:
       - attestation_net
     entrypoint: ["/bin/sh", "-lc"]

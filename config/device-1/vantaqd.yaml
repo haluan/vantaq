@@ -1,0 +1,19 @@
+service:
+  listen_host: 0.0.0.0
+  listen_port: 8080
+  version: 0.1.0
+
+device_identity:
+  device_id: edge-gw-001
+  model: edge-gateway-v1
+  serial_number: SN-001
+  manufacturer: ExampleCorp
+  firmware_version: 0.1.0-demo
+
+capabilities:
+  supported_claims:
+    - device_identity
+  signature_algorithms: []
+  evidence_formats: []
+  challenge_modes: []
+  storage_modes: []
