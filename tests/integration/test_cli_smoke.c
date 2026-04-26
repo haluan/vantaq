@@ -285,6 +285,8 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     char health_body[512];
     long long uptime_seconds = -1;
     char *uptime_field;
+    int identity_status;
+    char identity_body[512];
 
     if (port <= 0) {
         return;
@@ -311,6 +313,10 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
                      404);
     assert_int_equal(
         request_status_code(port, "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n"), 405);
+    assert_int_equal(request_status_code(port,
+                                         "POST /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n"
+                                         "\r\n"),
+                     405);
     assert_int_equal(request_status_and_body(port,
                                              "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
                                              &health_status, health_body, sizeof(health_body)),
@@ -325,6 +331,16 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     uptime_field += strlen("\"uptime_seconds\":");
     assert_int_equal(sscanf(uptime_field, "%lld", &uptime_seconds), 1);
     assert_true(uptime_seconds >= 0);
+    assert_int_equal(
+        request_status_and_body(port, "GET /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                                &identity_status, identity_body, sizeof(identity_body)),
+        0);
+    assert_int_equal(identity_status, 200);
+    assert_non_null(strstr(identity_body, "\"device_id\":\"edge-gw-001\""));
+    assert_non_null(strstr(identity_body, "\"model\":\"edge-gateway-v1\""));
+    assert_non_null(strstr(identity_body, "\"serial_number\":\"SN-001\""));
+    assert_non_null(strstr(identity_body, "\"manufacturer\":\"ExampleCorp\""));
+    assert_non_null(strstr(identity_body, "\"firmware_version\":\"0.1.0-demo\""));
 
     assert_int_equal(kill(child, SIGTERM), 0);
     assert_int_equal(waitpid(child, &status, 0), child);

@@ -19,6 +19,11 @@ struct vantaq_http_server_options {
     int listen_port;
     const char *service_name;
     const char *service_version;
+    const char *device_id;
+    const char *device_model;
+    const char *device_serial_number;
+    const char *device_manufacturer;
+    const char *device_firmware_version;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;

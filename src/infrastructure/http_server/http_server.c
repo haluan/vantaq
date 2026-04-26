@@ -25,6 +25,11 @@ static volatile sig_atomic_t g_listener_fd    = -1;
 struct vantaq_http_health_context {
     const char *service_name;
     const char *service_version;
+    const char *device_id;
+    const char *device_model;
+    const char *device_serial_number;
+    const char *device_manufacturer;
+    const char *device_firmware_version;
     struct timespec started_at;
 };
 
@@ -136,6 +141,42 @@ static int send_health_response(int fd, const struct vantaq_http_health_context 
     return write_all(fd, response, (size_t)response_n);
 }
 
+static int send_identity_response(int fd, const struct vantaq_http_health_context *ctx) {
+    char json[640];
+    char response[896];
+    int json_n;
+    int response_n;
+
+    if (ctx == NULL || ctx->device_id == NULL || ctx->device_model == NULL ||
+        ctx->device_serial_number == NULL || ctx->device_manufacturer == NULL ||
+        ctx->device_firmware_version == NULL) {
+        return -1;
+    }
+
+    json_n = snprintf(json, sizeof(json),
+                      "{\"device_id\":\"%s\",\"model\":\"%s\",\"serial_number\":\"%s\","
+                      "\"manufacturer\":\"%s\",\"firmware_version\":\"%s\"}\n",
+                      ctx->device_id, ctx->device_model, ctx->device_serial_number,
+                      ctx->device_manufacturer, ctx->device_firmware_version);
+    if (json_n <= 0 || (size_t)json_n >= sizeof(json)) {
+        return -1;
+    }
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %d\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          json_n, json);
+    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)response_n);
+}
+
 static int parse_request_line(char *buf, const char **method_out, const char **path_out) {
     char *line_end;
     char *method;
@@ -171,6 +212,12 @@ static int route_status_code(const char *method, const char *path) {
         }
         return 200;
     }
+    if (strcmp(path, "/v1/device/identity") == 0) {
+        if (strcmp(method, "GET") != 0) {
+            return 405;
+        }
+        return 200;
+    }
 
     return 404;
 }
@@ -196,6 +243,10 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
 
     status_code = route_status_code(method, path);
     if (status_code == 200) {
+        if (strcmp(path, "/v1/device/identity") == 0) {
+            (void)send_identity_response(client_fd, health_ctx);
+            return;
+        }
         (void)send_health_response(client_fd, health_ctx);
         return;
     }
@@ -280,7 +331,12 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     if (options == NULL || options->listen_host == NULL || options->listen_host[0] == '\0' ||
         options->listen_port <= 0 || options->listen_port > 65535 ||
         options->service_name == NULL || options->service_name[0] == '\0' ||
-        options->service_version == NULL || options->service_version[0] == '\0') {
+        options->service_version == NULL || options->service_version[0] == '\0' ||
+        options->device_id == NULL || options->device_id[0] == '\0' ||
+        options->device_model == NULL || options->device_model[0] == '\0' ||
+        options->device_serial_number == NULL || options->device_serial_number[0] == '\0' ||
+        options->device_manufacturer == NULL || options->device_manufacturer[0] == '\0' ||
+        options->device_firmware_version == NULL || options->device_firmware_version[0] == '\0') {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
 
@@ -301,10 +357,15 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
     }
 
-    g_stop_requested           = 0;
-    g_listener_fd              = listener;
-    health_ctx.service_name    = options->service_name;
-    health_ctx.service_version = options->service_version;
+    g_stop_requested                   = 0;
+    g_listener_fd                      = listener;
+    health_ctx.service_name            = options->service_name;
+    health_ctx.service_version         = options->service_version;
+    health_ctx.device_id               = options->device_id;
+    health_ctx.device_model            = options->device_model;
+    health_ctx.device_serial_number    = options->device_serial_number;
+    health_ctx.device_manufacturer     = options->device_manufacturer;
+    health_ctx.device_firmware_version = options->device_firmware_version;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {
         health_ctx.started_at.tv_sec  = 0;
         health_ctx.started_at.tv_nsec = 0;
