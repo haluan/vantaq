@@ -5,6 +5,7 @@
 
 #include "infrastructure/http_server.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/socket_peer.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -60,6 +61,13 @@ struct vantaq_http_health_context {
     void *io_ctx;
 };
 
+struct vantaq_http_request_context {
+    char peer_ipv4[INET_ADDRSTRLEN];
+    bool peer_ip_ok;
+    int deny_status_code;
+    enum vantaq_peer_address_status peer_status;
+};
+
 static int log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
     if (logger != NULL && text != NULL) {
         return logger(ctx, text);
@@ -105,6 +113,8 @@ static int send_status_response(int fd, int status_code) {
         status_text = "Method Not Allowed";
     } else if (status_code == 400) {
         status_text = "Bad Request";
+    } else if (status_code == 403) {
+        status_text = "Forbidden";
     }
 
     n = snprintf(response, sizeof(response),
@@ -427,11 +437,34 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     size_t total_read = 0;
     char method[16];
     char path[256];
+    char log_buf[192];
+    struct vantaq_http_request_context request_ctx;
     int status_code;
 
     VANTAQ_ZERO_STRUCT(req_buf);
     VANTAQ_ZERO_STRUCT(method);
     VANTAQ_ZERO_STRUCT(path);
+    VANTAQ_ZERO_STRUCT(log_buf);
+    VANTAQ_ZERO_STRUCT(request_ctx);
+
+    request_ctx.peer_status = vantaq_peer_address_get_ipv4(client_fd, request_ctx.peer_ipv4,
+                                                           sizeof(request_ctx.peer_ipv4));
+    if (request_ctx.peer_status != VANTAQ_PEER_ADDRESS_STATUS_OK) {
+        request_ctx.peer_ip_ok       = false;
+        request_ctx.deny_status_code = 403;
+
+        (void)snprintf(log_buf, sizeof(log_buf), "http server: peer ip detection failed: %s\n",
+                       vantaq_peer_address_status_text(request_ctx.peer_status));
+        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+
+        if (send_status_response(client_fd, request_ctx.deny_status_code) != 0) {
+            log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                     "http server: failed to send deny status response\n");
+        }
+        return;
+    }
+    request_ctx.peer_ip_ok       = true;
+    request_ctx.deny_status_code = 0;
 
     while (total_read < sizeof(req_buf) - 1) {
         ssize_t n = recv(client_fd, req_buf + total_read, sizeof(req_buf) - 1 - total_read, 0);

@@ -11,6 +11,7 @@ set(VANTAQ_COMMON_SOURCES
   src/application/app.c
   src/domain/version.c
   src/infrastructure/stdio_io.c
+  src/infrastructure/socket_peer/peer_address.c
   src/infrastructure/config_loader/config_loader.c
   src/infrastructure/http_server/http_server.c
 )
@@ -42,6 +43,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_config_loader tests/unit/test_config_loader.c)
   target_link_libraries(test_config_loader PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_config_loader COMMAND test_config_loader)
+
+  add_executable(test_socket_peer tests/unit/test_socket_peer.c)
+  target_link_libraries(test_socket_peer PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_socket_peer COMMAND test_socket_peer)
 
   add_executable(test_app_startup_config tests/unit/test_app_startup_config.c)
   target_link_libraries(test_app_startup_config PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
