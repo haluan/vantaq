@@ -14,6 +14,7 @@ enum vantaq_http_server_status {
     VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT,
     VANTAQ_HTTP_SERVER_STATUS_BIND_ERROR,
     VANTAQ_HTTP_SERVER_STATUS_LISTEN_ERROR,
+    VANTAQ_HTTP_SERVER_STATUS_TLS_INIT_ERROR,
     VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR,
 };
 
@@ -43,6 +44,11 @@ struct vantaq_http_server_options {
     bool dev_allow_all_networks;
     const char *audit_log_path;
     size_t audit_log_max_bytes;
+    bool tls_enabled;
+    const char *tls_server_cert_path;
+    const char *tls_server_key_path;
+    const char *tls_trusted_client_ca_path;
+    bool tls_require_client_cert;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;

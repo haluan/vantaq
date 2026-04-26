@@ -3,8 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/device/Dockerfile
+    environment:
+      VANTAQ_TLS_ENABLED: "true"
     ports:
-      - "8080:8080"
+      - "8443:8443"
     volumes:
       - ./config/device-1/vantaqd.yaml:/etc/vantaqd/vantaqd.yaml:ro
       - ./config/certs:/etc/vantaqd/certs:ro
@@ -17,18 +19,24 @@ services:
 
   allowed-verifier:
     image: curlimages/curl:8.12.1
+    volumes:
+      - ./config/certs:/certs:ro
     networks:
       attestation_allowed_net:
         ipv4_address: 10.50.10.20
 
   rogue-verifier:
     image: curlimages/curl:8.12.1
+    volumes:
+      - ./config/certs:/certs:ro
     networks:
       attestation_denied_net:
         ipv4_address: 10.60.10.20
 
   verifier-cli:
     image: curlimages/curl:8.12.1
+    volumes:
+      - ./config/certs:/certs:ro
     networks:
       - attestation_net
 
@@ -38,6 +46,8 @@ services:
       dockerfile: docker/test-runner/Dockerfile
     depends_on:
       - device-1
+    volumes:
+      - ./config/certs:/certs:ro
     networks:
       - attestation_net
 

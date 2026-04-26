@@ -4,10 +4,14 @@
 
 set -eu
 
-BASE_URL="${BASE_URL:-http://device-1:8080}"
+BASE_URL="${BASE_URL:-https://device-1:8443}"
 HEALTH_URL="${HEALTH_URL:-${BASE_URL}/v1/health}"
 IDENTITY_URL="${IDENTITY_URL:-${BASE_URL}/v1/device/identity}"
 CAPABILITIES_URL="${CAPABILITIES_URL:-${BASE_URL}/v1/device/capabilities}"
+CERT_DIR="${CERT_DIR:-/certs}"
+CA_CERT="${CA_CERT:-${CERT_DIR}/device-ca.crt}"
+CLIENT_CERT="${CLIENT_CERT:-${CERT_DIR}/govt-verifier-01.crt}"
+CLIENT_KEY="${CLIENT_KEY:-${CERT_DIR}/govt-verifier-01.key}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-30}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-1}"
 
@@ -20,7 +24,11 @@ request_json_or_fail() {
   expected_pattern="$2"
   label="$3"
 
-  http_code="$(curl -sS -o "$tmp_body" -w '%{http_code}' "$url" || true)"
+  http_code="$(curl -sS -o "$tmp_body" -w '%{http_code}' \
+    --cacert "$CA_CERT" \
+    --cert "$CLIENT_CERT" \
+    --key "$CLIENT_KEY" \
+    "$url" || true)"
   if [ "$http_code" != "200" ]; then
     echo "health-check: FAIL ${label} returned http=${http_code}"
     cat "$tmp_body"
@@ -39,7 +47,11 @@ request_json_or_fail() {
 echo "health-check: waiting for ${HEALTH_URL}"
 
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-  http_code="$(curl -sS -o "$tmp_body" -w '%{http_code}' "$HEALTH_URL" || true)"
+  http_code="$(curl -sS -o "$tmp_body" -w '%{http_code}' \
+    --cacert "$CA_CERT" \
+    --cert "$CLIENT_CERT" \
+    --key "$CLIENT_KEY" \
+    "$HEALTH_URL" || true)"
 
   if [ "$http_code" = "200" ]; then
     if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$tmp_body"; then

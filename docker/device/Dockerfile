@@ -3,7 +3,7 @@
 FROM debian:bookworm-slim AS builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential make cmake git \
+    && apt-get install -y --no-install-recommends build-essential make cmake git libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
@@ -17,11 +17,14 @@ RUN make build
 
 FROM debian:bookworm-slim AS runtime
 
-RUN mkdir -p /etc/vantaqd \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /etc/vantaqd \
     && cat > /etc/vantaqd/vantaqd.yaml <<'YAML'
 service:
   listen_host: 0.0.0.0
-  listen_port: 8080
+  listen_port: 8443
   version: 0.1.0
 
 device_identity:
@@ -46,6 +49,6 @@ YAML
 
 COPY --from=builder /workspace/bin/vantaqd /usr/local/bin/vantaqd
 
-EXPOSE 8080
+EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/vantaqd"]
 CMD []

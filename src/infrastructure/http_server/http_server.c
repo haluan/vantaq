@@ -8,6 +8,7 @@
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
 #include "infrastructure/subnet_policy.h"
+#include "infrastructure/tls_server.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -76,6 +77,11 @@ struct vantaq_http_request_context {
     enum vantaq_peer_address_status peer_status;
 };
 
+struct vantaq_http_connection {
+    int fd;
+    struct vantaq_tls_connection *tls_connection;
+};
+
 static int log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
     if (logger != NULL && text != NULL) {
         return logger(ctx, text);
@@ -93,11 +99,38 @@ static void handle_term_signal(int signum) {
     }
 }
 
-static int write_all(int fd, const char *buf, size_t len) {
+static ssize_t connection_read(struct vantaq_http_connection *connection, void *buf, size_t len) {
+    if (connection == NULL || buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (connection->tls_connection != NULL) {
+        return vantaq_tls_connection_read(connection->tls_connection, buf, len);
+    }
+
+    return recv(connection->fd, buf, len, 0);
+}
+
+static ssize_t connection_write(struct vantaq_http_connection *connection, const void *buf,
+                                size_t len) {
+    if (connection == NULL || buf == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (connection->tls_connection != NULL) {
+        return vantaq_tls_connection_write(connection->tls_connection, buf, len);
+    }
+
+    return send(connection->fd, buf, len, 0);
+}
+
+static int write_all(struct vantaq_http_connection *connection, const char *buf, size_t len) {
     size_t sent = 0;
 
     while (sent < len) {
-        ssize_t n = send(fd, buf + sent, len - sent, 0);
+        ssize_t n = connection_write(connection, buf + sent, len - sent);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -110,7 +143,7 @@ static int write_all(int fd, const char *buf, size_t len) {
     return 0;
 }
 
-static int send_status_response(int fd, int status_code) {
+static int send_status_response(struct vantaq_http_connection *connection, int status_code) {
     const char *status_text = "Internal Server Error";
     char response[160];
     int n;
@@ -134,10 +167,11 @@ static int send_status_response(int fd, int status_code) {
     if (n <= 0 || (size_t)n >= sizeof(response)) {
         return -1;
     }
-    return write_all(fd, response, (size_t)n);
+    return write_all(connection, response, (size_t)n);
 }
 
-static int send_subnet_denied_response(int fd, const char *request_id) {
+static int send_subnet_denied_response(struct vantaq_http_connection *connection,
+                                       const char *request_id) {
     char json_body[256];
     char response[512];
     int n_body, n_resp;
@@ -167,7 +201,7 @@ static int send_subnet_denied_response(int fd, const char *request_id) {
         return -1;
     }
 
-    return write_all(fd, response, (size_t)n_resp);
+    return write_all(connection, response, (size_t)n_resp);
 }
 
 static long long elapsed_seconds_since(const struct timespec *started_at) {
@@ -292,7 +326,8 @@ static int append_json_string_array(char *buf, size_t json_size, size_t *used, c
     return append_jsonf(buf, json_size, used, "]");
 }
 
-static int send_health_response(int fd, const struct vantaq_http_health_context *ctx) {
+static int send_health_response(struct vantaq_http_connection *connection,
+                                const struct vantaq_http_health_context *ctx) {
     char json[VANTAQ_HEALTH_JSON_BUF_SIZE];
     char response[VANTAQ_HEALTH_JSON_BUF_SIZE + 256];
     int json_n;
@@ -333,10 +368,11 @@ static int send_health_response(int fd, const struct vantaq_http_health_context 
         return -1;
     }
 
-    return write_all(fd, response, (size_t)response_n);
+    return write_all(connection, response, (size_t)response_n);
 }
 
-static int send_identity_response(int fd, const struct vantaq_http_health_context *ctx) {
+static int send_identity_response(struct vantaq_http_connection *connection,
+                                  const struct vantaq_http_health_context *ctx) {
     char json[VANTAQ_IDENTITY_JSON_BUF_SIZE];
     char response[VANTAQ_IDENTITY_JSON_BUF_SIZE + 256];
     int json_n;
@@ -381,10 +417,11 @@ static int send_identity_response(int fd, const struct vantaq_http_health_contex
         return -1;
     }
 
-    return write_all(fd, response, (size_t)response_n);
+    return write_all(connection, response, (size_t)response_n);
 }
 
-static int send_capabilities_response(int fd, const struct vantaq_http_health_context *ctx) {
+static int send_capabilities_response(struct vantaq_http_connection *connection,
+                                      const struct vantaq_http_health_context *ctx) {
     char *json;
     char response_header[512];
     size_t used = 0;
@@ -436,12 +473,12 @@ static int send_capabilities_response(int fd, const struct vantaq_http_health_co
         return -1;
     }
 
-    if (write_all(fd, response_header, (size_t)header_n) != 0) {
+    if (write_all(connection, response_header, (size_t)header_n) != 0) {
         free(json);
         return -1;
     }
 
-    result = write_all(fd, json, (size_t)json_n);
+    result = write_all(connection, json, (size_t)json_n);
     free(json);
     return result;
 }
@@ -502,7 +539,8 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
     return 404;
 }
 
-static void handle_client(int client_fd, const struct vantaq_http_health_context *health_ctx) {
+static void handle_client(struct vantaq_http_connection *connection,
+                          const struct vantaq_http_health_context *health_ctx) {
     char req_buf[VANTAQ_HTTP_REQ_BUF_SIZE];
     size_t total_read = 0;
     char method[16];
@@ -523,18 +561,19 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     VANTAQ_ZERO_STRUCT(request_ctx);
     VANTAQ_ZERO_STRUCT(subnet_input);
 
-    request_ctx.peer_status = vantaq_peer_address_get_ipv4(client_fd, request_ctx.peer_ipv4,
+    request_ctx.peer_status = vantaq_peer_address_get_ipv4(connection->fd, request_ctx.peer_ipv4,
                                                            sizeof(request_ctx.peer_ipv4));
     request_ctx.peer_ip_ok  = (request_ctx.peer_status == VANTAQ_PEER_ADDRESS_STATUS_OK);
 
     tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
     tv.tv_usec = 0;
-    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+    if (setsockopt(connection->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         goto cleanup;
     }
 
     while (total_read < sizeof(req_buf) - 1) {
-        ssize_t n = recv(client_fd, req_buf + total_read, sizeof(req_buf) - 1 - total_read, 0);
+        ssize_t n =
+            connection_read(connection, req_buf + total_read, sizeof(req_buf) - 1 - total_read);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -562,7 +601,7 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     }
 
     if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
-        (void)send_status_response(client_fd, 400);
+        (void)send_status_response(connection, 400);
         goto cleanup;
     }
 
@@ -579,7 +618,7 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
         (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet policy failed: %s\n",
                        vantaq_subnet_policy_status_text(subnet_status));
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
-        (void)send_status_response(client_fd, 500);
+        (void)send_status_response(connection, 500);
         goto cleanup;
     }
 
@@ -617,7 +656,7 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
                        method, path, peer_text);
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
 
-        if (send_subnet_denied_response(client_fd, request_id) != 0) {
+        if (send_subnet_denied_response(connection, request_id) != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                            "http server: failed to send subnet denied response\n");
         }
@@ -627,22 +666,22 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     if (status_code == 200) {
         int rc;
         if (strcmp(path, "/v1/device/identity") == 0) {
-            rc = send_identity_response(client_fd, health_ctx);
+            rc = send_identity_response(connection, health_ctx);
         } else if (strcmp(path, "/v1/device/capabilities") == 0) {
-            rc = send_capabilities_response(client_fd, health_ctx);
+            rc = send_capabilities_response(connection, health_ctx);
         } else {
-            rc = send_health_response(client_fd, health_ctx);
+            rc = send_health_response(connection, health_ctx);
         }
 
         if (rc != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                            "http server: failed to send response\n");
-            (void)send_status_response(client_fd, 500);
+            (void)send_status_response(connection, 500);
         }
         goto cleanup;
     }
 
-    if (send_status_response(client_fd, status_code) != 0) {
+    if (send_status_response(connection, status_code) != 0) {
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                        "http server: failed to send status response\n");
     }
@@ -723,16 +762,20 @@ enum vantaq_http_server_status
 vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     int listener;
     size_t i;
-    struct vantaq_audit_log *audit_log = NULL;
+    struct vantaq_audit_log *audit_log   = NULL;
+    struct vantaq_tls_server *tls_server = NULL;
     enum vantaq_audit_log_status audit_create_status;
+    enum vantaq_tls_server_status tls_status;
     struct sigaction sa;
     struct sigaction old_term;
     struct sigaction old_int;
-    char startup[192];
+    char startup[224];
+    char tls_msg[256];
     struct vantaq_http_health_context health_ctx;
 
     VANTAQ_ZERO_STRUCT(health_ctx);
     VANTAQ_ZERO_STRUCT(startup);
+    VANTAQ_ZERO_STRUCT(tls_msg);
 
     if (options == NULL || options->cbSize < sizeof(struct vantaq_http_server_options) ||
         options->listen_host == NULL || options->listen_host[0] == '\0' ||
@@ -753,6 +796,13 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (options->allowed_subnets_count > 0 && options->allowed_subnets == NULL) ||
         options->audit_log_path == NULL || options->audit_log_path[0] == '\0' ||
         options->audit_log_max_bytes == 0) {
+        return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
+    }
+    if (options->tls_enabled &&
+        (options->tls_server_cert_path == NULL || options->tls_server_cert_path[0] == '\0' ||
+         options->tls_server_key_path == NULL || options->tls_server_key_path[0] == '\0' ||
+         options->tls_trusted_client_ca_path == NULL ||
+         options->tls_trusted_client_ca_path[0] == '\0')) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
     for (i = 0; i < options->allowed_subnets_count; i++) {
@@ -776,6 +826,26 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         return VANTAQ_HTTP_SERVER_STATUS_BIND_ERROR;
     }
 
+    if (options->tls_enabled) {
+        struct vantaq_tls_server_options tls_options;
+        VANTAQ_ZERO_STRUCT(tls_options);
+        tls_options.cbSize                 = sizeof(tls_options);
+        tls_options.server_cert_path       = options->tls_server_cert_path;
+        tls_options.server_key_path        = options->tls_server_key_path;
+        tls_options.trusted_client_ca_path = options->tls_trusted_client_ca_path;
+        tls_options.require_client_cert    = options->tls_require_client_cert;
+
+        tls_status = vantaq_tls_server_create(&tls_options, &tls_server);
+        if (tls_status != VANTAQ_TLS_SERVER_STATUS_OK) {
+            (void)snprintf(tls_msg, sizeof(tls_msg), "http server: tls init failed: %s\n",
+                           vantaq_tls_server_status_text(tls_status));
+            log_text(options->write_err, options->io_ctx, tls_msg);
+            (void)close(listener);
+            vantaq_audit_log_destroy(audit_log);
+            return VANTAQ_HTTP_SERVER_STATUS_TLS_INIT_ERROR;
+        }
+    }
+
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_term_signal;
     sigemptyset(&sa.sa_mask);
@@ -790,6 +860,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (void)close(listener);
         log_text(options->write_err, options->io_ctx,
                  "http server: failed to set signal handlers\n");
+        vantaq_tls_server_destroy(tls_server);
         vantaq_audit_log_destroy(audit_log);
         return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
     }
@@ -824,7 +895,8 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         health_ctx.started_at.tv_nsec = 0;
     }
 
-    if (snprintf(startup, sizeof(startup), "http server listening on %s:%d\n", options->listen_host,
+    if (snprintf(startup, sizeof(startup), "%s server listening on %s:%d\n",
+                 options->tls_enabled ? "https" : "http", options->listen_host,
                  options->listen_port) > 0) {
         log_text(options->write_out, options->io_ctx, startup);
     }
@@ -841,7 +913,29 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
             continue;
         }
 
-        handle_client(client_fd, &health_ctx);
+        {
+            struct vantaq_http_connection connection;
+            VANTAQ_ZERO_STRUCT(connection);
+            connection.fd = client_fd;
+
+            if (tls_server != NULL) {
+                tls_status =
+                    vantaq_tls_server_handshake(tls_server, client_fd, &connection.tls_connection);
+                if (tls_status != VANTAQ_TLS_SERVER_STATUS_OK) {
+                    (void)snprintf(tls_msg, sizeof(tls_msg),
+                                   "http server: tls handshake failed: %s\n",
+                                   vantaq_tls_server_status_text(tls_status));
+                    log_text(options->write_err, options->io_ctx, tls_msg);
+                    (void)close(client_fd);
+                    continue;
+                }
+            }
+
+            handle_client(&connection, &health_ctx);
+            if (connection.tls_connection != NULL) {
+                vantaq_tls_connection_destroy(connection.tls_connection);
+            }
+        }
         (void)close(client_fd);
     }
 
@@ -865,6 +959,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     }
 
     restore_signal(&old_term, &old_int);
+    vantaq_tls_server_destroy(tls_server);
     vantaq_audit_log_destroy(audit_log);
 
     return VANTAQ_HTTP_SERVER_STATUS_OK;
@@ -880,6 +975,8 @@ const char *vantaq_http_server_status_text(enum vantaq_http_server_status status
         return "bind/listen failed";
     case VANTAQ_HTTP_SERVER_STATUS_LISTEN_ERROR:
         return "listen failed";
+    case VANTAQ_HTTP_SERVER_STATUS_TLS_INIT_ERROR:
+        return "tls init failed";
     case VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR:
         return "runtime error";
     default:
