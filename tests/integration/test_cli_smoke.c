@@ -212,12 +212,79 @@ static int request_status_code(int port, const char *request) {
     return status;
 }
 
-static void test_server_bootstrap_404_and_405_with_graceful_shutdown(void **state) {
+static int request_status_and_body(int port, const char *request, int *status_out, char *body_out,
+                                   size_t body_out_size) {
+    int sock;
+    struct sockaddr_in addr;
+    char response[1024];
+    ssize_t n;
+    char *header_end;
+    int status = -1;
+
+    if (status_out == NULL || body_out == NULL || body_out_size == 0) {
+        return -1;
+    }
+
+    body_out[0] = '\0';
+    sock        = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons((uint16_t)port);
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+        close(sock);
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(sock);
+        return -1;
+    }
+
+    if (write(sock, request, strlen(request)) < 0) {
+        close(sock);
+        return -1;
+    }
+
+    n = read(sock, response, sizeof(response) - 1);
+    close(sock);
+    if (n <= 0) {
+        return -1;
+    }
+
+    response[n] = '\0';
+    if (sscanf(response, "HTTP/1.1 %d", &status) != 1) {
+        return -1;
+    }
+
+    header_end = strstr(response, "\r\n\r\n");
+    if (header_end == NULL) {
+        return -1;
+    }
+    header_end += 4;
+
+    if (strlen(header_end) >= body_out_size) {
+        return -1;
+    }
+
+    strcpy(body_out, header_end);
+    *status_out = status;
+    return 0;
+}
+
+static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **state) {
     (void)state;
     int port           = reserve_ephemeral_port();
     char cfg_path[256] = {0};
     pid_t child;
     int status;
+    int health_status;
+    char health_body[512];
+    long long uptime_seconds = -1;
+    char *uptime_field;
 
     if (port <= 0) {
         return;
@@ -244,6 +311,20 @@ static void test_server_bootstrap_404_and_405_with_graceful_shutdown(void **stat
                      404);
     assert_int_equal(
         request_status_code(port, "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n"), 405);
+    assert_int_equal(request_status_and_body(port,
+                                             "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                                             &health_status, health_body, sizeof(health_body)),
+                     0);
+    assert_int_equal(health_status, 200);
+    assert_non_null(strstr(health_body, "\"status\":\"ok\""));
+    assert_non_null(strstr(health_body, "\"service\":\"vantaqd\""));
+    assert_non_null(strstr(health_body, "\"version\":\"0.1.0\""));
+    assert_non_null(strstr(health_body, "\"uptime_seconds\":"));
+    uptime_field = strstr(health_body, "\"uptime_seconds\":");
+    assert_non_null(uptime_field);
+    uptime_field += strlen("\"uptime_seconds\":");
+    assert_int_equal(sscanf(uptime_field, "%lld", &uptime_seconds), 1);
+    assert_true(uptime_seconds >= 0);
 
     assert_int_equal(kill(child, SIGTERM), 0);
     assert_int_equal(waitpid(child, &status, 0), child);
@@ -255,7 +336,7 @@ static void test_server_bootstrap_404_and_405_with_graceful_shutdown(void **stat
 
 int main(void) {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test(test_server_bootstrap_404_and_405_with_graceful_shutdown),
+        cmocka_unit_test(test_server_bootstrap_health_404_405_and_graceful_shutdown),
     };
 
     return cmocka_run_group_tests_name("integration_http_bootstrap", tests, NULL, NULL);

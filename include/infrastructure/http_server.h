@@ -17,6 +17,8 @@ enum vantaq_http_server_status {
 struct vantaq_http_server_options {
     const char *listen_host;
     int listen_port;
+    const char *service_name;
+    const char *service_version;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;

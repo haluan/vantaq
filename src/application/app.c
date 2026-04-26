@@ -89,11 +89,13 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             vantaq_write(io->write_out, io->ctx, output);
         }
 
-        server_options.listen_host = vantaq_runtime_service_listen_host(config);
-        server_options.listen_port = vantaq_runtime_service_listen_port(config);
-        server_options.write_out   = io->write_out;
-        server_options.write_err   = io->write_err;
-        server_options.io_ctx      = io->ctx;
+        server_options.listen_host     = vantaq_runtime_service_listen_host(config);
+        server_options.listen_port     = vantaq_runtime_service_listen_port(config);
+        server_options.service_name    = "vantaqd";
+        server_options.service_version = vantaq_runtime_service_version(config);
+        server_options.write_out       = io->write_out;
+        server_options.write_err       = io->write_err;
+        server_options.io_ctx          = io->ctx;
 
         server_status = vantaq_http_server_run(&server_options);
         if (server_status != VANTAQ_HTTP_SERVER_STATUS_OK) {

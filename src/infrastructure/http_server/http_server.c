@@ -14,12 +14,19 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define VANTAQ_HTTP_REQ_BUF_SIZE 2048
 
 static volatile sig_atomic_t g_stop_requested = 0;
 static volatile sig_atomic_t g_listener_fd    = -1;
+
+struct vantaq_http_health_context {
+    const char *service_name;
+    const char *service_version;
+    struct timespec started_at;
+};
 
 static void log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
     if (logger != NULL && text != NULL) {
@@ -79,6 +86,56 @@ static int send_status_response(int fd, int status_code) {
     return write_all(fd, response, (size_t)n);
 }
 
+static long long elapsed_seconds_since(const struct timespec *started_at) {
+    struct timespec now;
+    long long sec;
+
+    if (started_at == NULL || clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+
+    sec = (long long)(now.tv_sec - started_at->tv_sec);
+    if (sec < 0) {
+        return 0;
+    }
+    return sec;
+}
+
+static int send_health_response(int fd, const struct vantaq_http_health_context *ctx) {
+    char json[512];
+    char response[768];
+    int json_n;
+    int response_n;
+    long long uptime_seconds;
+
+    if (ctx == NULL || ctx->service_name == NULL || ctx->service_version == NULL) {
+        return -1;
+    }
+
+    uptime_seconds = elapsed_seconds_since(&ctx->started_at);
+    json_n         = snprintf(
+        json, sizeof(json),
+        "{\"status\":\"ok\",\"service\":\"%s\",\"version\":\"%s\",\"uptime_seconds\":%lld}\n",
+        ctx->service_name, ctx->service_version, uptime_seconds);
+    if (json_n <= 0 || (size_t)json_n >= sizeof(json)) {
+        return -1;
+    }
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %d\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          json_n, json);
+    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)response_n);
+}
+
 static int parse_request_line(char *buf, const char **method_out, const char **path_out) {
     char *line_end;
     char *method;
@@ -112,13 +169,13 @@ static int route_status_code(const char *method, const char *path) {
         if (strcmp(method, "GET") != 0) {
             return 405;
         }
-        return 404;
+        return 200;
     }
 
     return 404;
 }
 
-static void handle_client(int client_fd) {
+static void handle_client(int client_fd, const struct vantaq_http_health_context *health_ctx) {
     char req_buf[VANTAQ_HTTP_REQ_BUF_SIZE];
     ssize_t nread;
     const char *method;
@@ -138,6 +195,10 @@ static void handle_client(int client_fd) {
     }
 
     status_code = route_status_code(method, path);
+    if (status_code == 200) {
+        (void)send_health_response(client_fd, health_ctx);
+        return;
+    }
     (void)send_status_response(client_fd, status_code);
 }
 
@@ -214,9 +275,12 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     struct sigaction old_term;
     struct sigaction old_int;
     char startup[192];
+    struct vantaq_http_health_context health_ctx;
 
     if (options == NULL || options->listen_host == NULL || options->listen_host[0] == '\0' ||
-        options->listen_port <= 0 || options->listen_port > 65535) {
+        options->listen_port <= 0 || options->listen_port > 65535 ||
+        options->service_name == NULL || options->service_name[0] == '\0' ||
+        options->service_version == NULL || options->service_version[0] == '\0') {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
 
@@ -237,8 +301,14 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
     }
 
-    g_stop_requested = 0;
-    g_listener_fd    = listener;
+    g_stop_requested           = 0;
+    g_listener_fd              = listener;
+    health_ctx.service_name    = options->service_name;
+    health_ctx.service_version = options->service_version;
+    if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {
+        health_ctx.started_at.tv_sec  = 0;
+        health_ctx.started_at.tv_nsec = 0;
+    }
 
     if (snprintf(startup, sizeof(startup), "http server listening on %s:%d\n", options->listen_host,
                  options->listen_port) > 0) {
@@ -256,7 +326,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
             continue;
         }
 
-        handle_client(client_fd);
+        handle_client(client_fd, &health_ctx);
         (void)close(client_fd);
     }
 
