@@ -7,12 +7,14 @@ CMAKE_BUILD_DIR ?= build/cmake
 all: build
 
 cmake-configure:
-	$(CMAKE) -S . -B $(CMAKE_BUILD_DIR)
+	$(CMAKE) -S . -B $(CMAKE_BUILD_DIR) -DVANTAQ_BUILD_TESTS=OFF
 
 build: cmake-configure
 	$(CMAKE) --build $(CMAKE_BUILD_DIR)
 
-test: build
+test:
+	$(CMAKE) -S . -B $(CMAKE_BUILD_DIR) -DVANTAQ_BUILD_TESTS=ON
+	$(CMAKE) --build $(CMAKE_BUILD_DIR)
 	$(CTEST) --test-dir $(CMAKE_BUILD_DIR) --output-on-failure
 
 clean:

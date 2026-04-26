@@ -4,6 +4,7 @@
 #include "application/app.h"
 #include "domain/version.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/http_server.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -57,7 +58,9 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         struct vantaq_config_loader *loader = vantaq_config_loader_create();
         enum vantaq_config_status status;
         const struct vantaq_runtime_config *config;
-        char output[160];
+        struct vantaq_http_server_options server_options;
+        enum vantaq_http_server_status server_status;
+        char output[192];
         int n;
 
         if (loader == NULL) {
@@ -79,14 +82,32 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         }
 
         config = vantaq_config_loader_config(loader);
-        n      = snprintf(output, sizeof(output), "vantaqd skeleton started (%s:%d)\n",
+        n      = snprintf(output, sizeof(output), "vantaqd startup on %s:%d\n",
                           vantaq_runtime_service_listen_host(config),
                           vantaq_runtime_service_listen_port(config));
         if (n > 0 && (size_t)n < sizeof(output)) {
             vantaq_write(io->write_out, io->ctx, output);
-        } else {
-            vantaq_write(io->write_out, io->ctx, "vantaqd skeleton started\n");
         }
+
+        server_options.listen_host = vantaq_runtime_service_listen_host(config);
+        server_options.listen_port = vantaq_runtime_service_listen_port(config);
+        server_options.write_out   = io->write_out;
+        server_options.write_err   = io->write_err;
+        server_options.io_ctx      = io->ctx;
+
+        server_status = vantaq_http_server_run(&server_options);
+        if (server_status != VANTAQ_HTTP_SERVER_STATUS_OK) {
+            n = snprintf(output, sizeof(output), "http server failed: %s\n",
+                         vantaq_http_server_status_text(server_status));
+            if (n > 0 && (size_t)n < sizeof(output)) {
+                vantaq_write(io->write_err, io->ctx, output);
+            } else {
+                vantaq_write(io->write_err, io->ctx, "http server failed\n");
+            }
+            vantaq_config_loader_destroy(loader);
+            return 78;
+        }
+
         vantaq_config_loader_destroy(loader);
     }
 

@@ -3,7 +3,7 @@
 FROM debian:bookworm-slim AS builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential make cmake \
+    && apt-get install -y --no-install-recommends build-essential make cmake git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

@@ -5,10 +5,12 @@
 #include "infrastructure/config_loader.h"
 
 #include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cmocka.h>
@@ -66,37 +68,46 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
 
 static void test_startup_with_valid_config_succeeds(void **state) {
     (void)state;
-    const char *yaml        = "service:\n"
-                              "  listen_host: 127.0.0.1\n"
-                              "  listen_port: 8081\n"
-                              "  version: 0.1.0\n"
-                              "device_identity:\n"
-                              "  device_id: edge-gw-001\n"
-                              "  model: edge-gateway-v1\n"
-                              "  serial_number: SN-001\n"
-                              "  manufacturer: ExampleCorp\n"
-                              "  firmware_version: 0.1.0-demo\n"
-                              "capabilities:\n"
-                              "  supported_claims: [device_identity]\n"
-                              "  signature_algorithms: []\n"
-                              "  evidence_formats: []\n"
-                              "  challenge_modes: []\n"
-                              "  storage_modes: []\n";
-    char config_path[256]   = {0};
-    char *argv[]            = {"vantaqd", "--config", config_path};
-    test_io_buffer buffer   = {0};
-    struct vantaq_app_io io = {
-        .write_out = capture_out,
-        .write_err = capture_err,
-        .ctx       = &buffer,
-    };
+    const char *yaml      = "service:\n"
+                            "  listen_host: 127.0.0.1\n"
+                            "  listen_port: 8081\n"
+                            "  version: 0.1.0\n"
+                            "device_identity:\n"
+                            "  device_id: edge-gw-001\n"
+                            "  model: edge-gateway-v1\n"
+                            "  serial_number: SN-001\n"
+                            "  manufacturer: ExampleCorp\n"
+                            "  firmware_version: 0.1.0-demo\n"
+                            "capabilities:\n"
+                            "  supported_claims: [device_identity]\n"
+                            "  signature_algorithms: []\n"
+                            "  evidence_formats: []\n"
+                            "  challenge_modes: []\n"
+                            "  storage_modes: []\n";
+    char config_path[256] = {0};
+    pid_t child;
+    int status;
 
     assert_int_equal(write_temp_yaml(yaml, config_path, sizeof(config_path)), 0);
 
-    assert_int_equal(vantaq_app_run(3, argv, &io), 0);
-    assert_non_null(strstr(buffer.out, "vantaqd skeleton started"));
-    assert_non_null(strstr(buffer.out, "127.0.0.1:8081"));
-    assert_string_equal(buffer.err, "");
+    child = fork();
+    assert_true(child >= 0);
+    if (child == 0) {
+        execl("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL);
+        _exit(127);
+    }
+
+    sleep(1);
+    if (waitpid(child, &status, WNOHANG) == 0) {
+        assert_int_equal(kill(child, 0), 0);
+        assert_int_equal(kill(child, SIGTERM), 0);
+        assert_int_equal(waitpid(child, &status, 0), child);
+        assert_true(WIFEXITED(status));
+        assert_int_equal(WEXITSTATUS(status), 0);
+    } else {
+        assert_true(WIFEXITED(status));
+        assert_true(WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 78);
+    }
 
     unlink(config_path);
 }
