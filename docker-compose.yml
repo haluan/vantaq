@@ -15,6 +15,15 @@ services:
     networks:
       - attestation_net
 
+  test-runner:
+    build:
+      context: .
+      dockerfile: docker/test-runner/Dockerfile
+    depends_on:
+      - device-1
+    networks:
+      - attestation_net
+
 networks:
   attestation_net:
     name: attestation_net
