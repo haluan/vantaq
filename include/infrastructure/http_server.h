@@ -40,6 +40,8 @@ struct vantaq_http_server_options {
     const char *const *allowed_subnets;
     size_t allowed_subnets_count;
     int dev_allow_all_networks;
+    const char *audit_log_path;
+    size_t audit_log_max_bytes;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;

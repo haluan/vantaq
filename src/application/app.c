@@ -8,9 +8,12 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define VANTAQ_USAGE "Usage: vantaqd [--version] [--config <path>]\n"
+#define VANTAQ_DEFAULT_AUDIT_LOG_PATH "/var/lib/vantaqd/audit.log"
+#define VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES (64U * 1024U)
 
 static void vantaq_write(const vantaq_write_fn writer, void *ctx, const char *text) {
     if (writer != NULL && text != NULL) {
@@ -114,6 +117,7 @@ collect_allowed_subnet_items(const struct vantaq_runtime_config *config, const c
 
 int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
     const char *config_path             = VANTAQ_DEFAULT_CONFIG_PATH;
+    const char *audit_log_path          = NULL;
     struct vantaq_config_loader *loader = NULL;
     int i;
     int exit_code = 0;
@@ -178,6 +182,11 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         size_t storage_modes_count                              = 0;
         size_t allowed_subnets_count                            = 0;
         int n;
+
+        audit_log_path = getenv("VANTAQ_AUDIT_LOG_PATH");
+        if (audit_log_path == NULL || audit_log_path[0] == '\0') {
+            audit_log_path = VANTAQ_DEFAULT_AUDIT_LOG_PATH;
+        }
 
         loader = vantaq_config_loader_create();
         if (loader == NULL) {
@@ -293,6 +302,8 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         server_options.allowed_subnets            = allowed_subnets;
         server_options.allowed_subnets_count      = allowed_subnets_count;
         server_options.dev_allow_all_networks     = vantaq_runtime_dev_allow_all_networks(config);
+        server_options.audit_log_path             = audit_log_path;
+        server_options.audit_log_max_bytes        = VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES;
         server_options.write_out                  = io->write_out;
         server_options.write_err                  = io->write_err;
         server_options.io_ctx                     = io->ctx;

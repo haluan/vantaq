@@ -4,6 +4,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "infrastructure/http_server.h"
+#include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
 #include "infrastructure/subnet_policy.h"
@@ -60,6 +61,7 @@ struct vantaq_http_health_context {
     const char *const *allowed_subnets;
     size_t allowed_subnets_count;
     int dev_allow_all_networks;
+    struct vantaq_audit_log *audit_log;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
     void *io_ctx;
@@ -467,6 +469,7 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     struct vantaq_subnet_policy_input subnet_input;
     enum vantaq_subnet_policy_decision subnet_decision;
     enum vantaq_subnet_policy_status subnet_status;
+    enum vantaq_audit_log_status audit_status;
     int status_code;
 
     VANTAQ_ZERO_STRUCT(req_buf);
@@ -526,9 +529,28 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     }
 
     if (subnet_decision == VANTAQ_SUBNET_POLICY_DECISION_DENY) {
+        struct vantaq_audit_event audit_event;
         const char *peer_text = request_ctx.peer_ip_ok
                                     ? request_ctx.peer_ipv4
                                     : vantaq_peer_address_status_text(request_ctx.peer_status);
+
+        VANTAQ_ZERO_STRUCT(audit_event);
+        audit_event.time_utc_epoch_seconds = time(NULL);
+        audit_event.source_ip = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : "unknown";
+        audit_event.method    = method;
+        audit_event.path      = path;
+        audit_event.result    = "DENY";
+        audit_event.reason    = "SUBNET_NOT_ALLOWED";
+
+        audit_status = vantaq_audit_log_append(health_ctx->audit_log, &audit_event);
+        if (audit_status != VANTAQ_AUDIT_LOG_STATUS_OK) {
+            const char *last_error = vantaq_audit_log_last_error(health_ctx->audit_log);
+            (void)snprintf(log_buf, sizeof(log_buf), "http server: audit append failed: %s (%s)\n",
+                           vantaq_audit_log_status_text(audit_status),
+                           last_error != NULL ? last_error : "unknown");
+            log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+        }
+
         (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet denied %s %s peer=%s\n",
                        method, path, peer_text);
         log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
@@ -637,6 +659,8 @@ enum vantaq_http_server_status
 vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     int listener;
     size_t i;
+    struct vantaq_audit_log *audit_log = NULL;
+    enum vantaq_audit_log_status audit_create_status;
     struct sigaction sa;
     struct sigaction old_term;
     struct sigaction old_int;
@@ -663,7 +687,9 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (options->challenge_modes_count > 0 && options->challenge_modes == NULL) ||
         (options->storage_modes_count > 0 && options->storage_modes == NULL) ||
         (options->allowed_subnets_count > 0 && options->allowed_subnets == NULL) ||
-        (options->dev_allow_all_networks != 0 && options->dev_allow_all_networks != 1)) {
+        (options->dev_allow_all_networks != 0 && options->dev_allow_all_networks != 1) ||
+        options->audit_log_path == NULL || options->audit_log_path[0] == '\0' ||
+        options->audit_log_max_bytes == 0) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
     for (i = 0; i < options->allowed_subnets_count; i++) {
@@ -672,9 +698,18 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         }
     }
 
+    audit_create_status =
+        vantaq_audit_log_create(options->audit_log_path, options->audit_log_max_bytes, &audit_log);
+    if (audit_create_status != VANTAQ_AUDIT_LOG_STATUS_OK) {
+        log_text(options->write_err, options->io_ctx,
+                 "http server: failed to initialize audit log\n");
+        return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
+    }
+
     listener = create_listener(options->listen_host, options->listen_port, options->write_err,
                                options->io_ctx);
     if (listener < 0) {
+        vantaq_audit_log_destroy(audit_log);
         return VANTAQ_HTTP_SERVER_STATUS_BIND_ERROR;
     }
 
@@ -692,6 +727,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (void)close(listener);
         log_text(options->write_err, options->io_ctx,
                  "http server: failed to set signal handlers\n");
+        vantaq_audit_log_destroy(audit_log);
         return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
     }
 
@@ -717,6 +753,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.allowed_subnets            = options->allowed_subnets;
     health_ctx.allowed_subnets_count      = options->allowed_subnets_count;
     health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
+    health_ctx.audit_log                  = audit_log;
     health_ctx.err_logger                 = options->write_err;
     health_ctx.io_ctx                     = options->io_ctx;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {
@@ -765,6 +802,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     }
 
     restore_signal(&old_term, &old_int);
+    vantaq_audit_log_destroy(audit_log);
 
     return VANTAQ_HTTP_SERVER_STATUS_OK;
 }

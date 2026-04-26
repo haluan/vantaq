@@ -145,6 +145,43 @@ static int write_temp_yaml(int port, const char *allowed_subnets, const char *de
     return 0;
 }
 
+static int make_temp_audit_path(char *path_out, size_t path_out_size) {
+    char template[] = "/tmp/vantaq_audit_it_XXXXXX.log";
+    int fd          = mkstemps(template, 4);
+
+    if (fd < 0) {
+        return -1;
+    }
+    close(fd);
+
+    if (strlen(template) >= path_out_size) {
+        unlink(template);
+        return -1;
+    }
+
+    strcpy(path_out, template);
+    return 0;
+}
+
+static int read_text_file(const char *path, char *out, size_t out_size) {
+    FILE *file;
+    size_t n;
+
+    if (path == NULL || out == NULL || out_size == 0) {
+        return -1;
+    }
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return -1;
+    }
+
+    n      = fread(out, 1, out_size - 1, file);
+    out[n] = '\0';
+    fclose(file);
+    return 0;
+}
+
 static int wait_for_server_ready(int port, int timeout_ms) {
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
     int attempts          = timeout_ms / 50;
@@ -377,8 +414,10 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
 
 static void test_health_denied_for_disallowed_subnet(void **state) {
     (void)state;
-    int port           = reserve_ephemeral_port();
-    char cfg_path[256] = {0};
+    int port             = reserve_ephemeral_port();
+    char cfg_path[256]   = {0};
+    char audit_path[256] = {0};
+    char audit_text[2048];
     pid_t child;
     int status;
     int health_status;
@@ -391,11 +430,15 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     }
     assert_int_equal(write_temp_yaml(port, "10.50.10.0/24", "false", cfg_path, sizeof(cfg_path)),
                      0);
+    assert_int_equal(make_temp_audit_path(audit_path, sizeof(audit_path)), 0);
 
     child = fork();
     assert_true(child >= 0);
 
     if (child == 0) {
+        if (setenv("VANTAQ_AUDIT_LOG_PATH", audit_path, 1) != 0) {
+            _exit(126);
+        }
         execl("./bin/vantaqd", "vantaqd", "--config", cfg_path, (char *)NULL);
         _exit(127);
     }
@@ -405,6 +448,7 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
         (void)kill(child, SIGTERM);
         (void)waitpid(child, &child_status, 0);
         unlink(cfg_path);
+        unlink(audit_path);
         return;
     }
 
@@ -445,12 +489,21 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     assert_int_equal(request_status_code(port, "GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n"),
                      404);
 
+    assert_int_equal(read_text_file(audit_path, audit_text, sizeof(audit_text)), 0);
+    assert_non_null(strstr(audit_text, "\"source_ip\":\"127.0.0.1\""));
+    assert_non_null(strstr(audit_text, "\"method\":\"GET\""));
+    assert_non_null(strstr(audit_text, "\"path\":\"/v1/health\""));
+    assert_non_null(strstr(audit_text, "\"result\":\"DENY\""));
+    assert_non_null(strstr(audit_text, "\"reason\":\"SUBNET_NOT_ALLOWED\""));
+    assert_non_null(strstr(audit_text, "\"time\":\""));
+
     assert_int_equal(kill(child, SIGTERM), 0);
     assert_int_equal(waitpid(child, &status, 0), child);
     assert_true(WIFEXITED(status));
     assert_int_equal(WEXITSTATUS(status), 0);
 
     unlink(cfg_path);
+    unlink(audit_path);
 }
 
 int main(void) {
