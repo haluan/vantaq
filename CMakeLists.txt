@@ -13,6 +13,7 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/network_access/ipv4_cidr.c
   src/infrastructure/stdio_io.c
   src/infrastructure/socket_peer/peer_address.c
+  src/infrastructure/subnet_policy/subnet_policy.c
   src/infrastructure/config_loader/config_loader.c
   src/infrastructure/http_server/http_server.c
 )
@@ -48,6 +49,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_socket_peer tests/unit/test_socket_peer.c)
   target_link_libraries(test_socket_peer PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_socket_peer COMMAND test_socket_peer)
+
+  add_executable(test_subnet_policy tests/unit/test_subnet_policy.c)
+  target_link_libraries(test_subnet_policy PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_subnet_policy COMMAND test_subnet_policy)
 
   add_executable(test_ipv4_cidr tests/unit/test_ipv4_cidr.c)
   target_link_libraries(test_ipv4_cidr PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})

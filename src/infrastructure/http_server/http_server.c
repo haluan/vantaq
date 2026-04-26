@@ -6,6 +6,7 @@
 #include "infrastructure/http_server.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
+#include "infrastructure/subnet_policy.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -56,6 +57,9 @@ struct vantaq_http_health_context {
     size_t challenge_modes_count;
     const char *const *storage_modes;
     size_t storage_modes_count;
+    const char *const *allowed_subnets;
+    size_t allowed_subnets_count;
+    int dev_allow_all_networks;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
     void *io_ctx;
@@ -64,7 +68,6 @@ struct vantaq_http_health_context {
 struct vantaq_http_request_context {
     char peer_ipv4[INET_ADDRSTRLEN];
     bool peer_ip_ok;
-    int deny_status_code;
     enum vantaq_peer_address_status peer_status;
 };
 
@@ -126,6 +129,28 @@ static int send_status_response(int fd, int status_code) {
     if (n <= 0 || (size_t)n >= sizeof(response)) {
         return -1;
     }
+    return write_all(fd, response, (size_t)n);
+}
+
+static int send_subnet_denied_response(int fd) {
+    static const char json_body[] = "{\"error\":{\"code\":\"SUBNET_NOT_ALLOWED\","
+                                    "\"message\":\"Requester source network is not allowed.\","
+                                    "\"request_id\":\"req-000001\"}}\n";
+    char response[512];
+    int n;
+
+    n = snprintf(response, sizeof(response),
+                 "HTTP/1.1 403 Forbidden\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: %zu\r\n"
+                 "Connection: close\r\n"
+                 "\r\n"
+                 "%s",
+                 strlen(json_body), json_body);
+    if (n <= 0 || (size_t)n >= sizeof(response)) {
+        return -1;
+    }
+
     return write_all(fd, response, (size_t)n);
 }
 
@@ -439,6 +464,9 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     char path[256];
     char log_buf[192];
     struct vantaq_http_request_context request_ctx;
+    struct vantaq_subnet_policy_input subnet_input;
+    enum vantaq_subnet_policy_decision subnet_decision;
+    enum vantaq_subnet_policy_status subnet_status;
     int status_code;
 
     VANTAQ_ZERO_STRUCT(req_buf);
@@ -446,25 +474,11 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     VANTAQ_ZERO_STRUCT(path);
     VANTAQ_ZERO_STRUCT(log_buf);
     VANTAQ_ZERO_STRUCT(request_ctx);
+    VANTAQ_ZERO_STRUCT(subnet_input);
 
     request_ctx.peer_status = vantaq_peer_address_get_ipv4(client_fd, request_ctx.peer_ipv4,
                                                            sizeof(request_ctx.peer_ipv4));
-    if (request_ctx.peer_status != VANTAQ_PEER_ADDRESS_STATUS_OK) {
-        request_ctx.peer_ip_ok       = false;
-        request_ctx.deny_status_code = 403;
-
-        (void)snprintf(log_buf, sizeof(log_buf), "http server: peer ip detection failed: %s\n",
-                       vantaq_peer_address_status_text(request_ctx.peer_status));
-        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
-
-        if (send_status_response(client_fd, request_ctx.deny_status_code) != 0) {
-            log_text(health_ctx->err_logger, health_ctx->io_ctx,
-                     "http server: failed to send deny status response\n");
-        }
-        return;
-    }
-    request_ctx.peer_ip_ok       = true;
-    request_ctx.deny_status_code = 0;
+    request_ctx.peer_ip_ok  = (request_ctx.peer_status == VANTAQ_PEER_ADDRESS_STATUS_OK);
 
     while (total_read < sizeof(req_buf) - 1) {
         ssize_t n = recv(client_fd, req_buf + total_read, sizeof(req_buf) - 1 - total_read, 0);
@@ -491,6 +505,38 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
 
     if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
         (void)send_status_response(client_fd, 400);
+        return;
+    }
+
+    subnet_input.method                 = method;
+    subnet_input.path                   = path;
+    subnet_input.peer_status            = request_ctx.peer_status;
+    subnet_input.peer_ipv4              = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : NULL;
+    subnet_input.allowed_subnets        = health_ctx->allowed_subnets;
+    subnet_input.allowed_subnets_count  = health_ctx->allowed_subnets_count;
+    subnet_input.dev_allow_all_networks = health_ctx->dev_allow_all_networks;
+
+    subnet_status = vantaq_subnet_policy_evaluate(&subnet_input, &subnet_decision);
+    if (subnet_status != VANTAQ_SUBNET_POLICY_STATUS_OK) {
+        (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet policy failed: %s\n",
+                       vantaq_subnet_policy_status_text(subnet_status));
+        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+        (void)send_status_response(client_fd, 500);
+        return;
+    }
+
+    if (subnet_decision == VANTAQ_SUBNET_POLICY_DECISION_DENY) {
+        const char *peer_text = request_ctx.peer_ip_ok
+                                    ? request_ctx.peer_ipv4
+                                    : vantaq_peer_address_status_text(request_ctx.peer_status);
+        (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet denied %s %s peer=%s\n",
+                       method, path, peer_text);
+        log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+
+        if (send_subnet_denied_response(client_fd) != 0) {
+            log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                     "http server: failed to send subnet denied response\n");
+        }
         return;
     }
 
@@ -590,6 +636,7 @@ static void restore_signal(const struct sigaction *old_term, const struct sigact
 enum vantaq_http_server_status
 vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     int listener;
+    size_t i;
     struct sigaction sa;
     struct sigaction old_term;
     struct sigaction old_int;
@@ -614,8 +661,15 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (options->signature_algorithms_count > 0 && options->signature_algorithms == NULL) ||
         (options->evidence_formats_count > 0 && options->evidence_formats == NULL) ||
         (options->challenge_modes_count > 0 && options->challenge_modes == NULL) ||
-        (options->storage_modes_count > 0 && options->storage_modes == NULL)) {
+        (options->storage_modes_count > 0 && options->storage_modes == NULL) ||
+        (options->allowed_subnets_count > 0 && options->allowed_subnets == NULL) ||
+        (options->dev_allow_all_networks != 0 && options->dev_allow_all_networks != 1)) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0; i < options->allowed_subnets_count; i++) {
+        if (options->allowed_subnets[i] == NULL || options->allowed_subnets[i][0] == '\0') {
+            return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
+        }
     }
 
     listener = create_listener(options->listen_host, options->listen_port, options->write_err,
@@ -660,6 +714,9 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.challenge_modes_count      = options->challenge_modes_count;
     health_ctx.storage_modes              = options->storage_modes;
     health_ctx.storage_modes_count        = options->storage_modes_count;
+    health_ctx.allowed_subnets            = options->allowed_subnets;
+    health_ctx.allowed_subnets_count      = options->allowed_subnets_count;
+    health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
     health_ctx.err_logger                 = options->write_err;
     health_ctx.io_ctx                     = options->io_ctx;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {

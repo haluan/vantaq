@@ -37,6 +37,9 @@ struct vantaq_http_server_options {
     size_t challenge_modes_count;
     const char *const *storage_modes;
     size_t storage_modes_count;
+    const char *const *allowed_subnets;
+    size_t allowed_subnets_count;
+    int dev_allow_all_networks;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;

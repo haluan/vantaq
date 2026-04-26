@@ -85,6 +85,33 @@ collect_capability_items(const struct vantaq_runtime_config *config,
     return VANTAQ_CAPABILITY_STATUS_OK;
 }
 
+static enum vantaq_capability_status
+collect_allowed_subnet_items(const struct vantaq_runtime_config *config, const char **items,
+                             size_t items_capacity, size_t *count_out) {
+    size_t i;
+    size_t count;
+
+    if (config == NULL || items == NULL || count_out == NULL) {
+        return VANTAQ_CAPABILITY_STATUS_INVALID_ARGUMENT;
+    }
+
+    count = vantaq_runtime_allowed_subnet_count(config);
+    if (count > items_capacity) {
+        return VANTAQ_CAPABILITY_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    for (i = 0; i < count; i++) {
+        const char *item = vantaq_runtime_allowed_subnet_item(config, i);
+        if (item == NULL) {
+            return VANTAQ_CAPABILITY_STATUS_ITEM_NOT_FOUND;
+        }
+        items[i] = item;
+    }
+
+    *count_out = count;
+    return VANTAQ_CAPABILITY_STATUS_OK;
+}
+
 int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
     const char *config_path             = VANTAQ_DEFAULT_CONFIG_PATH;
     struct vantaq_config_loader *loader = NULL;
@@ -143,11 +170,13 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         const char *evidence_formats[VANTAQ_MAX_LIST_ITEMS]     = {0};
         const char *challenge_modes[VANTAQ_MAX_LIST_ITEMS]      = {0};
         const char *storage_modes[VANTAQ_MAX_LIST_ITEMS]        = {0};
+        const char *allowed_subnets[VANTAQ_MAX_LIST_ITEMS]      = {0};
         size_t supported_claims_count                           = 0;
         size_t signature_algorithms_count                       = 0;
         size_t evidence_formats_count                           = 0;
         size_t challenge_modes_count                            = 0;
         size_t storage_modes_count                              = 0;
+        size_t allowed_subnets_count                            = 0;
         int n;
 
         loader = vantaq_config_loader_create();
@@ -209,6 +238,27 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             }
         }
 
+        {
+            enum vantaq_capability_status subnet_status;
+
+            subnet_status = collect_allowed_subnet_items(
+                config, allowed_subnets, VANTAQ_MAX_LIST_ITEMS, &allowed_subnets_count);
+            if (subnet_status != VANTAQ_CAPABILITY_STATUS_OK) {
+                n = snprintf(output, sizeof(output),
+                             "config load failed: list 'network_access.allowed_subnets' error: "
+                             "%s\n",
+                             vantaq_capability_status_text(subnet_status));
+                if (n > 0 && (size_t)n < sizeof(output)) {
+                    vantaq_write(io->write_err, io->ctx, output);
+                } else {
+                    vantaq_write(io->write_err, io->ctx,
+                                 "config load failed: invalid network access data\n");
+                }
+                exit_code = 78;
+                goto cleanup;
+            }
+        }
+
         n = snprintf(output, sizeof(output), "vantaqd startup on %s:%d\n",
                      vantaq_runtime_service_listen_host(config),
                      vantaq_runtime_service_listen_port(config));
@@ -240,6 +290,9 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         server_options.challenge_modes_count      = challenge_modes_count;
         server_options.storage_modes              = storage_modes;
         server_options.storage_modes_count        = storage_modes_count;
+        server_options.allowed_subnets            = allowed_subnets;
+        server_options.allowed_subnets_count      = allowed_subnets_count;
+        server_options.dev_allow_all_networks     = vantaq_runtime_dev_allow_all_networks(config);
         server_options.write_out                  = io->write_out;
         server_options.write_err                  = io->write_err;
         server_options.io_ctx                     = io->ctx;

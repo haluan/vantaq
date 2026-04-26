@@ -81,7 +81,8 @@ static int reserve_ephemeral_port(void) {
     return first_available_port();
 }
 
-static int write_temp_yaml(int port, char *path_out, size_t path_out_size) {
+static int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow_all,
+                           char *path_out, size_t path_out_size) {
     const char *yaml_fmt = "service:\n"
                            "  listen_host: 127.0.0.1\n"
                            "  listen_port: %d\n"
@@ -100,7 +101,10 @@ static int write_temp_yaml(int port, char *path_out, size_t path_out_size) {
                            "  signature_algorithms: []\n"
                            "  evidence_formats: []\n"
                            "  challenge_modes: []\n"
-                           "  storage_modes: []\n";
+                           "  storage_modes: []\n"
+                           "network_access:\n"
+                           "  allowed_subnets: [%s]\n"
+                           "  dev_allow_all_networks: %s\n";
     char template[]      = "/tmp/vantaq_t05_XXXXXX.yaml";
     char yaml_buf[1024];
     int fd;
@@ -111,7 +115,13 @@ static int write_temp_yaml(int port, char *path_out, size_t path_out_size) {
         return -1;
     }
 
-    n = snprintf(yaml_buf, sizeof(yaml_buf), yaml_fmt, port);
+    if (allowed_subnets == NULL || dev_allow_all == NULL) {
+        close(fd);
+        unlink(template);
+        return -1;
+    }
+
+    n = snprintf(yaml_buf, sizeof(yaml_buf), yaml_fmt, port, allowed_subnets, dev_allow_all);
     if (n <= 0 || (size_t)n >= sizeof(yaml_buf)) {
         close(fd);
         unlink(template);
@@ -293,7 +303,7 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     if (port <= 0) {
         return;
     }
-    assert_int_equal(write_temp_yaml(port, cfg_path, sizeof(cfg_path)), 0);
+    assert_int_equal(write_temp_yaml(port, "127.0.0.1/32", "false", cfg_path, sizeof(cfg_path)), 0);
 
     child = fork();
     assert_true(child >= 0);
@@ -365,9 +375,65 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     unlink(cfg_path);
 }
 
+static void test_health_denied_for_disallowed_subnet(void **state) {
+    (void)state;
+    int port           = reserve_ephemeral_port();
+    char cfg_path[256] = {0};
+    pid_t child;
+    int status;
+    int health_status;
+    char health_body[512];
+
+    if (port <= 0) {
+        return;
+    }
+    assert_int_equal(write_temp_yaml(port, "10.50.10.0/24", "false", cfg_path, sizeof(cfg_path)),
+                     0);
+
+    child = fork();
+    assert_true(child >= 0);
+
+    if (child == 0) {
+        execl("./bin/vantaqd", "vantaqd", "--config", cfg_path, (char *)NULL);
+        _exit(127);
+    }
+
+    if (wait_for_server_ready(port, 4000) != 0) {
+        int child_status;
+        (void)kill(child, SIGTERM);
+        (void)waitpid(child, &child_status, 0);
+        unlink(cfg_path);
+        return;
+    }
+
+    assert_int_equal(request_status_and_body(port,
+                                             "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                                             &health_status, health_body, sizeof(health_body)),
+                     0);
+    assert_int_equal(health_status, 403);
+    assert_non_null(strstr(health_body, "\"error\""));
+    assert_non_null(strstr(health_body, "\"code\":\"SUBNET_NOT_ALLOWED\""));
+    assert_non_null(
+        strstr(health_body, "\"message\":\"Requester source network is not allowed.\""));
+    assert_non_null(strstr(health_body, "\"request_id\":\"req-000001\""));
+    assert_null(strstr(health_body, "\"status\":\"ok\""));
+    assert_int_equal(
+        request_status_code(port, "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n"), 405);
+    assert_int_equal(request_status_code(port, "GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                     404);
+
+    assert_int_equal(kill(child, SIGTERM), 0);
+    assert_int_equal(waitpid(child, &status, 0), child);
+    assert_true(WIFEXITED(status));
+    assert_int_equal(WEXITSTATUS(status), 0);
+
+    unlink(cfg_path);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_server_bootstrap_health_404_405_and_graceful_shutdown),
+        cmocka_unit_test(test_health_denied_for_disallowed_subnet),
     };
 
     return cmocka_run_group_tests_name("integration_http_bootstrap", tests, NULL, NULL);
