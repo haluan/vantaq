@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <netdb.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,16 @@ struct vantaq_http_health_context {
     const char *device_serial_number;
     const char *device_manufacturer;
     const char *device_firmware_version;
+    const char *const *supported_claims;
+    size_t supported_claims_count;
+    const char *const *signature_algorithms;
+    size_t signature_algorithms_count;
+    const char *const *evidence_formats;
+    size_t evidence_formats_count;
+    const char *const *challenge_modes;
+    size_t challenge_modes_count;
+    const char *const *storage_modes;
+    size_t storage_modes_count;
     struct timespec started_at;
 };
 
@@ -177,6 +188,94 @@ static int send_identity_response(int fd, const struct vantaq_http_health_contex
     return write_all(fd, response, (size_t)response_n);
 }
 
+static int append_jsonf(char *buf, size_t buf_size, size_t *used, const char *fmt, ...) {
+    va_list args;
+    int n;
+
+    if (buf == NULL || used == NULL || fmt == NULL || *used >= buf_size) {
+        return -1;
+    }
+
+    va_start(args, fmt);
+    n = vsnprintf(buf + *used, buf_size - *used, fmt, args);
+    va_end(args);
+    if (n < 0 || (size_t)n >= buf_size - *used) {
+        return -1;
+    }
+
+    *used += (size_t)n;
+    return 0;
+}
+
+static int append_json_string_array(char *json, size_t json_size, size_t *used, const char *key,
+                                    const char *const *items, size_t count, bool trailing_comma) {
+    size_t i;
+
+    if (append_jsonf(json, json_size, used, "\"%s\":[", key) != 0) {
+        return -1;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (items == NULL || items[i] == NULL) {
+            return -1;
+        }
+        if (i > 0 && append_jsonf(json, json_size, used, ",") != 0) {
+            return -1;
+        }
+        if (append_jsonf(json, json_size, used, "\"%s\"", items[i]) != 0) {
+            return -1;
+        }
+    }
+
+    if (trailing_comma) {
+        return append_jsonf(json, json_size, used, "],");
+    }
+    return append_jsonf(json, json_size, used, "]");
+}
+
+static int send_capabilities_response(int fd, const struct vantaq_http_health_context *ctx) {
+    char json[2048];
+    char response[2304];
+    int response_n;
+    size_t used = 0;
+
+    if (ctx == NULL || ctx->supported_claims == NULL || ctx->supported_claims_count == 0 ||
+        ctx->signature_algorithms == NULL || ctx->evidence_formats == NULL ||
+        ctx->challenge_modes == NULL || ctx->storage_modes == NULL) {
+        return -1;
+    }
+
+    if (append_jsonf(json, sizeof(json), &used, "{") != 0 ||
+        append_json_string_array(json, sizeof(json), &used, "supported_claims",
+                                 ctx->supported_claims, ctx->supported_claims_count, true) != 0 ||
+        append_json_string_array(json, sizeof(json), &used, "signature_algorithms",
+                                 ctx->signature_algorithms, ctx->signature_algorithms_count,
+                                 true) != 0 ||
+        append_json_string_array(json, sizeof(json), &used, "evidence_formats",
+                                 ctx->evidence_formats, ctx->evidence_formats_count, true) != 0 ||
+        append_json_string_array(json, sizeof(json), &used, "challenge_modes", ctx->challenge_modes,
+                                 ctx->challenge_modes_count, true) != 0 ||
+        append_json_string_array(json, sizeof(json), &used, "storage_modes", ctx->storage_modes,
+                                 ctx->storage_modes_count, false) != 0 ||
+        append_jsonf(json, sizeof(json), &used, "}\n") != 0) {
+        return -1;
+    }
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          used, json);
+    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)response_n);
+}
+
 static int parse_request_line(char *buf, const char **method_out, const char **path_out) {
     char *line_end;
     char *method;
@@ -218,6 +317,12 @@ static int route_status_code(const char *method, const char *path) {
         }
         return 200;
     }
+    if (strcmp(path, "/v1/device/capabilities") == 0) {
+        if (strcmp(method, "GET") != 0) {
+            return 405;
+        }
+        return 200;
+    }
 
     return 404;
 }
@@ -245,6 +350,10 @@ static void handle_client(int client_fd, const struct vantaq_http_health_context
     if (status_code == 200) {
         if (strcmp(path, "/v1/device/identity") == 0) {
             (void)send_identity_response(client_fd, health_ctx);
+            return;
+        }
+        if (strcmp(path, "/v1/device/capabilities") == 0) {
+            (void)send_capabilities_response(client_fd, health_ctx);
             return;
         }
         (void)send_health_response(client_fd, health_ctx);
@@ -336,7 +445,13 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         options->device_model == NULL || options->device_model[0] == '\0' ||
         options->device_serial_number == NULL || options->device_serial_number[0] == '\0' ||
         options->device_manufacturer == NULL || options->device_manufacturer[0] == '\0' ||
-        options->device_firmware_version == NULL || options->device_firmware_version[0] == '\0') {
+        options->device_firmware_version == NULL || options->device_firmware_version[0] == '\0' ||
+        options->supported_claims == NULL || options->supported_claims_count == 0 ||
+        (options->supported_claims_count > 0 && options->supported_claims == NULL) ||
+        (options->signature_algorithms_count > 0 && options->signature_algorithms == NULL) ||
+        (options->evidence_formats_count > 0 && options->evidence_formats == NULL) ||
+        (options->challenge_modes_count > 0 && options->challenge_modes == NULL) ||
+        (options->storage_modes_count > 0 && options->storage_modes == NULL)) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
 
@@ -357,15 +472,25 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         return VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
     }
 
-    g_stop_requested                   = 0;
-    g_listener_fd                      = listener;
-    health_ctx.service_name            = options->service_name;
-    health_ctx.service_version         = options->service_version;
-    health_ctx.device_id               = options->device_id;
-    health_ctx.device_model            = options->device_model;
-    health_ctx.device_serial_number    = options->device_serial_number;
-    health_ctx.device_manufacturer     = options->device_manufacturer;
-    health_ctx.device_firmware_version = options->device_firmware_version;
+    g_stop_requested                      = 0;
+    g_listener_fd                         = listener;
+    health_ctx.service_name               = options->service_name;
+    health_ctx.service_version            = options->service_version;
+    health_ctx.device_id                  = options->device_id;
+    health_ctx.device_model               = options->device_model;
+    health_ctx.device_serial_number       = options->device_serial_number;
+    health_ctx.device_manufacturer        = options->device_manufacturer;
+    health_ctx.device_firmware_version    = options->device_firmware_version;
+    health_ctx.supported_claims           = options->supported_claims;
+    health_ctx.supported_claims_count     = options->supported_claims_count;
+    health_ctx.signature_algorithms       = options->signature_algorithms;
+    health_ctx.signature_algorithms_count = options->signature_algorithms_count;
+    health_ctx.evidence_formats           = options->evidence_formats;
+    health_ctx.evidence_formats_count     = options->evidence_formats_count;
+    health_ctx.challenge_modes            = options->challenge_modes;
+    health_ctx.challenge_modes_count      = options->challenge_modes_count;
+    health_ctx.storage_modes              = options->storage_modes;
+    health_ctx.storage_modes_count        = options->storage_modes_count;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {
         health_ctx.started_at.tv_sec  = 0;
         health_ctx.started_at.tv_nsec = 0;

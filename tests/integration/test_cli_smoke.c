@@ -287,6 +287,8 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     char *uptime_field;
     int identity_status;
     char identity_body[512];
+    int capabilities_status;
+    char capabilities_body[768];
 
     if (port <= 0) {
         return;
@@ -317,6 +319,9 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
                                          "POST /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n"
                                          "\r\n"),
                      405);
+    assert_int_equal(request_status_code(
+                         port, "POST /v1/device/capabilities HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                     405);
     assert_int_equal(request_status_and_body(port,
                                              "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
                                              &health_status, health_body, sizeof(health_body)),
@@ -341,6 +346,16 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     assert_non_null(strstr(identity_body, "\"serial_number\":\"SN-001\""));
     assert_non_null(strstr(identity_body, "\"manufacturer\":\"ExampleCorp\""));
     assert_non_null(strstr(identity_body, "\"firmware_version\":\"0.1.0-demo\""));
+    assert_int_equal(request_status_and_body(
+                         port, "GET /v1/device/capabilities HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                         &capabilities_status, capabilities_body, sizeof(capabilities_body)),
+                     0);
+    assert_int_equal(capabilities_status, 200);
+    assert_non_null(strstr(capabilities_body, "\"supported_claims\":[\"device_identity\"]"));
+    assert_non_null(strstr(capabilities_body, "\"signature_algorithms\":[]"));
+    assert_non_null(strstr(capabilities_body, "\"evidence_formats\":[]"));
+    assert_non_null(strstr(capabilities_body, "\"challenge_modes\":[]"));
+    assert_non_null(strstr(capabilities_body, "\"storage_modes\":[]"));
 
     assert_int_equal(kill(child, SIGTERM), 0);
     assert_int_equal(waitpid(child, &status, 0), child);

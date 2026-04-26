@@ -4,6 +4,8 @@
 #ifndef VANTAQ_INFRASTRUCTURE_HTTP_SERVER_H
 #define VANTAQ_INFRASTRUCTURE_HTTP_SERVER_H
 
+#include <stddef.h>
+
 typedef void (*vantaq_http_log_fn)(void *ctx, const char *text);
 
 enum vantaq_http_server_status {
@@ -24,6 +26,16 @@ struct vantaq_http_server_options {
     const char *device_serial_number;
     const char *device_manufacturer;
     const char *device_firmware_version;
+    const char *const *supported_claims;
+    size_t supported_claims_count;
+    const char *const *signature_algorithms;
+    size_t signature_algorithms_count;
+    const char *const *evidence_formats;
+    size_t evidence_formats_count;
+    const char *const *challenge_modes;
+    size_t challenge_modes_count;
+    const char *const *storage_modes;
+    size_t storage_modes_count;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;
