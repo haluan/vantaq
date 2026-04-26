@@ -16,11 +16,14 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/socket_peer/peer_address.c
   src/infrastructure/subnet_policy/subnet_policy.c
   src/infrastructure/config_loader/config_loader.c
+  src/infrastructure/tls/tls_server.c
   src/infrastructure/http_server/http_server.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
 target_include_directories(vantaq_core PUBLIC include)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(vantaq_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
 if(MSVC)
   target_compile_options(vantaq_core PRIVATE /W4)

@@ -60,3 +60,7 @@ build/
 .internalx/
 tmp/
 bin/
+
+# Dev PKI artifacts
+config/certs/*
+!config/certs/.gitkeep

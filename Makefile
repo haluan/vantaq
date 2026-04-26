@@ -3,7 +3,7 @@ CTEST ?= ctest
 CMAKE_BUILD_DIR ?= build/cmake
 COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
 
-.PHONY: all cmake-configure build test clean format docker-device-build integration-test-subnet-allowed integration-test-subnet-denied
+.PHONY: all cmake-configure build test clean format dev-certs docker-device-build integration-test-subnet-allowed integration-test-subnet-denied
 
 all: build
 
@@ -24,6 +24,9 @@ clean:
 format:
 	@echo "Formatting C source files..."
 	@find src tests -name "*.c" -o -name "*.h" | xargs clang-format -i
+
+dev-certs:
+	./scripts/dev-pki/generate-dev-certs.sh
 
 docker-device-build:
 	docker build -f docker/device/Dockerfile -t vantaqd-device:local .

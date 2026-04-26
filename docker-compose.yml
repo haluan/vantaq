@@ -7,6 +7,7 @@ services:
       - "8080:8080"
     volumes:
       - ./config/device-1/vantaqd.yaml:/etc/vantaqd/vantaqd.yaml:ro
+      - ./config/certs:/etc/vantaqd/certs:ro
     networks:
       attestation_net: {}
       attestation_allowed_net:
