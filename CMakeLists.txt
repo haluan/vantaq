@@ -10,6 +10,7 @@ option(VANTAQ_BUILD_TESTS "Build CMocka tests" OFF)
 set(VANTAQ_COMMON_SOURCES
   src/application/app.c
   src/domain/version.c
+  src/domain/network_access/ipv4_cidr.c
   src/infrastructure/stdio_io.c
   src/infrastructure/socket_peer/peer_address.c
   src/infrastructure/config_loader/config_loader.c
@@ -47,6 +48,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_socket_peer tests/unit/test_socket_peer.c)
   target_link_libraries(test_socket_peer PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_socket_peer COMMAND test_socket_peer)
+
+  add_executable(test_ipv4_cidr tests/unit/test_ipv4_cidr.c)
+  target_link_libraries(test_ipv4_cidr PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_ipv4_cidr COMMAND test_ipv4_cidr)
 
   add_executable(test_app_startup_config tests/unit/test_app_startup_config.c)
   target_link_libraries(test_app_startup_config PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
