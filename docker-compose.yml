@@ -8,7 +8,23 @@ services:
     volumes:
       - ./config/device-1/vantaqd.yaml:/etc/vantaqd/vantaqd.yaml:ro
     networks:
-      - attestation_net
+      attestation_net: {}
+      attestation_allowed_net:
+        ipv4_address: 10.50.10.10
+      attestation_denied_net:
+        ipv4_address: 10.60.10.10
+
+  allowed-verifier:
+    image: curlimages/curl:8.12.1
+    networks:
+      attestation_allowed_net:
+        ipv4_address: 10.50.10.20
+
+  rogue-verifier:
+    image: curlimages/curl:8.12.1
+    networks:
+      attestation_denied_net:
+        ipv4_address: 10.60.10.20
 
   verifier-cli:
     image: curlimages/curl:8.12.1
@@ -28,3 +44,15 @@ networks:
   attestation_net:
     name: attestation_net
     driver: bridge
+  attestation_allowed_net:
+    name: attestation_allowed_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.50.10.0/24
+  attestation_denied_net:
+    name: attestation_denied_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.60.10.0/24

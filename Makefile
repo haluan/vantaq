@@ -1,8 +1,9 @@
 CMAKE ?= cmake
 CTEST ?= ctest
 CMAKE_BUILD_DIR ?= build/cmake
+COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
 
-.PHONY: all cmake-configure build test clean format docker-device-build
+.PHONY: all cmake-configure build test clean format docker-device-build integration-test-subnet-allowed integration-test-subnet-denied
 
 all: build
 
@@ -26,3 +27,11 @@ format:
 
 docker-device-build:
 	docker build -f docker/device/Dockerfile -t vantaqd-device:local .
+
+integration-test-subnet-allowed:
+	$(COMPOSE) up --build -d device-1
+	./scripts/subnet_allowed_health_check.sh
+
+integration-test-subnet-denied:
+	$(COMPOSE) up --build -d device-1
+	./scripts/subnet_denied_health_check.sh

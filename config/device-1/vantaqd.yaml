@@ -19,5 +19,6 @@ capabilities:
   storage_modes: []
 
 network_access:
-  allowed_subnets: []
-  dev_allow_all_networks: true
+  allowed_subnets:
+    - 10.50.10.0/24
+  dev_allow_all_networks: false

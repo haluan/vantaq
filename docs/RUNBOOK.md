@@ -81,3 +81,31 @@ docker compose run --rm test-runner
 ```bash
 docker compose down
 ```
+
+### Allowed-Subnet Health Check (T09)
+
+1. Run the canonical host command:
+
+```bash
+make integration-test-subnet-allowed
+```
+
+2. Expected result:
+
+```text
+PASS (HTTP 200 and health payload contains status=ok)
+```
+
+### Denied-Subnet Health Check (T10)
+
+1. Run the canonical host command:
+
+```bash
+make integration-test-subnet-denied
+```
+
+2. Expected result:
+
+```text
+PASS (HTTP 403 and error payload contains SUBNET_NOT_ALLOWED)
+```
