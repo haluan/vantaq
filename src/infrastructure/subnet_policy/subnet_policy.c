@@ -8,8 +8,20 @@
 #include <stddef.h>
 #include <string.h>
 
-static int is_health_get_request(const char *method, const char *path) {
-    return strcmp(method, "GET") == 0 && strcmp(path, "/v1/health") == 0;
+static int is_protected_verifier_get_request(const char *method, const char *path) {
+    if (strcmp(method, "GET") != 0) {
+        return 0;
+    }
+
+    if (strcmp(path, "/v1/health") == 0) {
+        return 1;
+    }
+
+    if (strcmp(path, "/v1/device/identity") == 0) {
+        return 1;
+    }
+
+    return 0;
 }
 
 enum vantaq_subnet_policy_status
@@ -23,7 +35,7 @@ vantaq_subnet_policy_evaluate(const struct vantaq_subnet_policy_input *input,
         return VANTAQ_SUBNET_POLICY_STATUS_INVALID_ARGUMENT;
     }
 
-    if (!is_health_get_request(input->method, input->path)) {
+    if (!is_protected_verifier_get_request(input->method, input->path)) {
         *out_decision = VANTAQ_SUBNET_POLICY_DECISION_ALLOW;
         return VANTAQ_SUBNET_POLICY_STATUS_OK;
     }

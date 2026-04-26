@@ -383,6 +383,8 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     int status;
     int health_status;
     char health_body[512];
+    int identity_status;
+    char identity_body[512];
 
     if (port <= 0) {
         return;
@@ -417,8 +419,29 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
         strstr(health_body, "\"message\":\"Requester source network is not allowed.\""));
     assert_non_null(strstr(health_body, "\"request_id\":\"req-000001\""));
     assert_null(strstr(health_body, "\"status\":\"ok\""));
+
+    assert_int_equal(
+        request_status_and_body(port, "GET /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                                &identity_status, identity_body, sizeof(identity_body)),
+        0);
+    assert_int_equal(identity_status, 403);
+    assert_non_null(strstr(identity_body, "\"error\""));
+    assert_non_null(strstr(identity_body, "\"code\":\"SUBNET_NOT_ALLOWED\""));
+    assert_non_null(
+        strstr(identity_body, "\"message\":\"Requester source network is not allowed.\""));
+    assert_non_null(strstr(identity_body, "\"request_id\":\"req-000001\""));
+    assert_null(strstr(identity_body, "\"device_id\":"));
+    assert_null(strstr(identity_body, "\"model\":"));
+    assert_null(strstr(identity_body, "\"serial_number\":"));
+    assert_null(strstr(identity_body, "\"manufacturer\":"));
+    assert_null(strstr(identity_body, "\"firmware_version\":"));
+
     assert_int_equal(
         request_status_code(port, "POST /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n"), 405);
+    assert_int_equal(request_status_code(port,
+                                         "POST /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n"
+                                         "\r\n"),
+                     405);
     assert_int_equal(request_status_code(port, "GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n"),
                      404);
 
