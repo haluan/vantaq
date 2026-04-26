@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,8 +15,6 @@
 #define VANTAQ_MAX_LINE_LEN 512
 #define VANTAQ_MAX_PATH_LEN 256
 #define VANTAQ_MAX_ERROR_LEN 256
-#define VANTAQ_MAX_FIELD_LEN 128
-#define VANTAQ_MAX_LIST_ITEMS 32
 
 #define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
@@ -25,47 +24,6 @@ enum vantaq_section {
     VANTAQ_SECTION_DEVICE_IDENTITY,
     VANTAQ_SECTION_CAPABILITIES,
     VANTAQ_SECTION_NETWORK_ACCESS,
-};
-
-struct vantaq_string_list {
-    char *items[VANTAQ_MAX_LIST_ITEMS];
-    size_t count;
-};
-
-struct vantaq_runtime_config {
-    char service_listen_host[VANTAQ_MAX_FIELD_LEN];
-    int service_listen_port;
-    char service_version[VANTAQ_MAX_FIELD_LEN];
-
-    char device_id[VANTAQ_MAX_FIELD_LEN];
-    char model[VANTAQ_MAX_FIELD_LEN];
-    char serial_number[VANTAQ_MAX_FIELD_LEN];
-    char manufacturer[VANTAQ_MAX_FIELD_LEN];
-    char firmware_version[VANTAQ_MAX_FIELD_LEN];
-
-    struct vantaq_string_list supported_claims;
-    struct vantaq_string_list signature_algorithms;
-    struct vantaq_string_list evidence_formats;
-    struct vantaq_string_list challenge_modes;
-    struct vantaq_string_list storage_modes;
-    struct vantaq_string_list allowed_subnets;
-    bool dev_allow_all_networks;
-
-    bool has_service_listen_host;
-    bool has_service_listen_port;
-    bool has_service_version;
-    bool has_device_id;
-    bool has_model;
-    bool has_serial_number;
-    bool has_manufacturer;
-    bool has_firmware_version;
-    bool has_supported_claims;
-    bool has_signature_algorithms;
-    bool has_evidence_formats;
-    bool has_challenge_modes;
-    bool has_storage_modes;
-    bool has_allowed_subnets;
-    bool has_dev_allow_all_networks;
 };
 
 struct vantaq_config_loader {
@@ -100,28 +58,19 @@ static struct vantaq_string_list *get_list_mut(struct vantaq_runtime_config *con
     return (struct vantaq_string_list *)get_list_const(config, list);
 }
 
-static void loader_set_error(struct vantaq_config_loader *loader, const char *fmt,
-                             const char *value) {
-    char clipped[96];
-    size_t n;
+static void loader_set_error(struct vantaq_config_loader *loader, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void loader_set_error(struct vantaq_config_loader *loader, const char *fmt, ...) {
+    va_list args;
 
     if (loader == NULL || fmt == NULL) {
         return;
     }
 
-    if (value == NULL) {
-        (void)snprintf(loader->last_error, sizeof(loader->last_error), "%s", fmt);
-        return;
-    }
-
-    n = strlen(value);
-    if (n >= sizeof(clipped)) {
-        n = sizeof(clipped) - 1;
-    }
-    memcpy(clipped, value, n);
-    clipped[n] = '\0';
-
-    (void)snprintf(loader->last_error, sizeof(loader->last_error), fmt, clipped);
+    va_start(args, fmt);
+    (void)vsnprintf(loader->last_error, sizeof(loader->last_error), fmt, args);
+    va_end(args);
 }
 
 static char *string_dup(const char *input) {
@@ -215,15 +164,30 @@ static void free_config_lists(struct vantaq_runtime_config *config) {
 static enum vantaq_config_status copy_string_to_field(struct vantaq_config_loader *loader,
                                                       const char *full_key, const char *value_raw,
                                                       char *dst, size_t dst_size, bool *seen) {
-    char *value = (char *)value_raw;
+    char local[VANTAQ_MAX_LINE_LEN];
+    char *value;
     size_t len;
 
-    if (value == NULL) {
+    VANTAQ_ZERO_STRUCT(local);
+
+    if (value_raw == NULL) {
         loader_set_error(loader, "missing value for %s", full_key);
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
-    value = trim(value);
+    if (*seen) {
+        loader_set_error(loader, "duplicate field %s", full_key);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    len = strlen(value_raw);
+    if (len >= sizeof(local)) {
+        loader_set_error(loader, "value too long for %s", full_key);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    memcpy(local, value_raw, len + 1);
+    value = trim(local);
     if (value[0] == '\0') {
         loader_set_error(loader, "missing value for %s", full_key);
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
@@ -258,6 +222,8 @@ static enum vantaq_config_status parse_list_item(struct vantaq_config_loader *lo
     char *item;
     size_t len;
 
+    VANTAQ_ZERO_STRUCT(local);
+
     if (item_raw == NULL || list == NULL) {
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
     }
@@ -290,6 +256,11 @@ static enum vantaq_config_status parse_list_item(struct vantaq_config_loader *lo
         item++;
     }
 
+    if (item[0] == '\0') {
+        loader_set_error(loader, "empty list item in %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
     list->items[list->count] = string_dup(item);
     if (list->items[list->count] == NULL) {
         loader_set_error(loader, "out of memory while parsing %s", field_name);
@@ -307,6 +278,8 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
     char local[VANTAQ_MAX_LINE_LEN];
     char *cursor;
     size_t len;
+
+    VANTAQ_ZERO_STRUCT(local);
 
     if (value == NULL || list == NULL) {
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
@@ -338,6 +311,11 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
         bool closes_list = false;
 
         if (*cursor == ']') {
+            cursor++;
+            if (trim(cursor)[0] != '\0') {
+                loader_set_error(loader, "trailing content after list for %s", field_name);
+                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            }
             return VANTAQ_CONFIG_STATUS_OK;
         }
 
@@ -361,6 +339,11 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
         }
 
         if (closes_list) {
+            cursor = end + 1;
+            if (trim(cursor)[0] != '\0') {
+                loader_set_error(loader, "trailing content after list for %s", field_name);
+                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            }
             return VANTAQ_CONFIG_STATUS_OK;
         }
 
@@ -379,8 +362,15 @@ static enum vantaq_config_status parse_int(struct vantaq_config_loader *loader,
     char local[VANTAQ_MAX_FIELD_LEN];
     size_t len;
 
+    VANTAQ_ZERO_STRUCT(local);
+
     if (value_raw == NULL || out == NULL || seen == NULL) {
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (*seen) {
+        loader_set_error(loader, "duplicate field %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
     len = strlen(value_raw);
@@ -414,8 +404,15 @@ static enum vantaq_config_status parse_bool(struct vantaq_config_loader *loader,
     size_t len;
     char *value;
 
+    VANTAQ_ZERO_STRUCT(local);
+
     if (value_raw == NULL || out == NULL || seen == NULL) {
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (*seen) {
+        loader_set_error(loader, "duplicate field %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
     len = strlen(value_raw);
@@ -439,6 +436,52 @@ static enum vantaq_config_status parse_bool(struct vantaq_config_loader *loader,
 
     loader_set_error(loader, "invalid boolean for %s", field_name);
     return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+}
+
+static bool is_valid_capability_item(enum vantaq_capability_list list, const char *item) {
+    static const char *const supported_claims[] = {
+        "device_identity",  "firmware_hash", "hw_version",     "sw_version",
+        "boot_loader_hash", "pcr_values",    "security_level", NULL};
+    static const char *const signature_algorithms[] = {"ES256", "ES384", "ES512", "RS256",
+                                                       "RS384", "RS512", NULL};
+    static const char *const evidence_formats[]     = {"eat", "dice", "tpm1.2", "tpm2.0", NULL};
+    static const char *const challenge_modes[]      = {"nonce", "timestamp", "counter", NULL};
+    static const char *const storage_modes[] = {"volatile", "persistent", "secure_element", NULL};
+
+    const char *const *allowlist;
+    size_t i;
+
+    if (item == NULL) {
+        return false;
+    }
+
+    switch (list) {
+    case VANTAQ_CAPABILITY_SUPPORTED_CLAIMS:
+        allowlist = supported_claims;
+        break;
+    case VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS:
+        allowlist = signature_algorithms;
+        break;
+    case VANTAQ_CAPABILITY_EVIDENCE_FORMATS:
+        allowlist = evidence_formats;
+        break;
+    case VANTAQ_CAPABILITY_CHALLENGE_MODES:
+        allowlist = challenge_modes;
+        break;
+    case VANTAQ_CAPABILITY_STORAGE_MODES:
+        allowlist = storage_modes;
+        break;
+    default:
+        return false;
+    }
+
+    for (i = 0; allowlist[i] != NULL; i++) {
+        if (strcmp(allowlist[i], item) == 0) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool is_valid_ipv4_cidr(const char *cidr) {
@@ -483,6 +526,32 @@ static bool is_valid_ipv4_cidr(const char *cidr) {
     return true;
 }
 
+static bool is_valid_listen_host(const char *host) {
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    const char *p;
+
+    if (host == NULL || host[0] == '\0') {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, host, &addr4) == 1) {
+        return true;
+    }
+
+    if (inet_pton(AF_INET6, host, &addr6) == 1) {
+        return true;
+    }
+
+    for (p = host; *p != '\0'; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool list_contains(const struct vantaq_string_list *list, const char *needle) {
     size_t i;
 
@@ -503,6 +572,10 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
                                                  const struct vantaq_runtime_config *config) {
     if (!config->has_service_listen_host) {
         loader_set_error(loader, "missing required field %s", "service.listen_host");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!is_valid_listen_host(config->service_listen_host)) {
+        loader_set_error(loader, "invalid listen_host: %s", config->service_listen_host);
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
     if (!config->has_service_listen_port) {
@@ -557,6 +630,29 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
         loader_set_error(loader, "missing required field %s", "capabilities.storage_modes");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
+
+    // Semantic validation of capability items
+    {
+        enum vantaq_capability_list lists[] = {
+            VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS,
+            VANTAQ_CAPABILITY_EVIDENCE_FORMATS, VANTAQ_CAPABILITY_CHALLENGE_MODES,
+            VANTAQ_CAPABILITY_STORAGE_MODES};
+        size_t l, i;
+        for (l = 0; l < 5; l++) {
+            const struct vantaq_string_list *list_data = get_list_const(config, lists[l]);
+            if (list_data == NULL) {
+                continue;
+            }
+            for (i = 0; i < list_data->count; i++) {
+                if (!is_valid_capability_item(lists[l], list_data->items[i])) {
+                    loader_set_error(loader, "unsupported capability '%s' in list %d",
+                                     list_data->items[i], (int)lists[l]);
+                    return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+                }
+            }
+        }
+    }
+
     if (config->has_allowed_subnets) {
         size_t i;
         for (i = 0; i < config->allowed_subnets.count; i++) {
@@ -593,27 +689,39 @@ static enum vantaq_capability_list parse_capability_key(const char *key, bool *o
     return VANTAQ_CAPABILITY_SUPPORTED_CLAIMS;
 }
 
-static void mark_capability_seen(struct vantaq_runtime_config *config,
+static bool mark_capability_seen(struct vantaq_runtime_config *config,
                                  enum vantaq_capability_list list) {
+    bool *flag = NULL;
+
     switch (list) {
     case VANTAQ_CAPABILITY_SUPPORTED_CLAIMS:
-        config->has_supported_claims = true;
+        flag = &config->has_supported_claims;
         break;
     case VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS:
-        config->has_signature_algorithms = true;
+        flag = &config->has_signature_algorithms;
         break;
     case VANTAQ_CAPABILITY_EVIDENCE_FORMATS:
-        config->has_evidence_formats = true;
+        flag = &config->has_evidence_formats;
         break;
     case VANTAQ_CAPABILITY_CHALLENGE_MODES:
-        config->has_challenge_modes = true;
+        flag = &config->has_challenge_modes;
         break;
     case VANTAQ_CAPABILITY_STORAGE_MODES:
-        config->has_storage_modes = true;
+        flag = &config->has_storage_modes;
         break;
     default:
-        break;
+        return true;
     }
+
+    if (flag != NULL && *flag) {
+        return false;
+    }
+
+    if (flag != NULL) {
+        *flag = true;
+    }
+
+    return true;
 }
 
 static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *loader, FILE *fp,
@@ -624,13 +732,22 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
     bool has_active_network_subnet_list     = false;
     enum vantaq_capability_list active_list = VANTAQ_CAPABILITY_SUPPORTED_CLAIMS;
 
+    VANTAQ_ZERO_STRUCT(line);
+
     while (fgets(line, sizeof(line), fp) != NULL) {
+        size_t line_len = strlen(line);
         char *cursor;
         char *colon;
         char *key;
         char *value;
         size_t indent;
         enum vantaq_config_status rc;
+
+        if (line_len > 0 && line[line_len - 1] != '\n' && !feof(fp)) {
+            loader_set_error(loader, "line exceeds maximum length of %d characters",
+                             VANTAQ_MAX_LINE_LEN - 1);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
 
         rtrim(line);
         if (is_blank_or_comment(line)) {
@@ -645,7 +762,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         if (cursor[0] == '-' && (cursor[1] == ' ' || cursor[1] == '\t')) {
             if (indent != 4) {
-                loader_set_error(loader, "invalid list indentation", NULL);
+                loader_set_error(loader, "invalid list indentation");
                 return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
             }
 
@@ -667,7 +784,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 continue;
             }
 
-            loader_set_error(loader, "invalid list indentation", NULL);
+            loader_set_error(loader, "invalid list indentation");
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -676,7 +793,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         colon = strchr(cursor, ':');
         if (colon == NULL) {
-            loader_set_error(loader, "missing ':' in yaml line", NULL);
+            loader_set_error(loader, "missing ':' in yaml line");
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -686,24 +803,32 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         if (indent == 0) {
             if (value[0] != '\0') {
-                loader_set_error(loader, "top-level key must be an object", NULL);
+                loader_set_error(loader, "top-level key must be an object");
                 return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
             }
 
             if (strcmp(key, "service") == 0) {
-                section = VANTAQ_SECTION_SERVICE;
+                section                        = VANTAQ_SECTION_SERVICE;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
                 continue;
             }
             if (strcmp(key, "device_identity") == 0) {
-                section = VANTAQ_SECTION_DEVICE_IDENTITY;
+                section                        = VANTAQ_SECTION_DEVICE_IDENTITY;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
                 continue;
             }
             if (strcmp(key, "capabilities") == 0) {
-                section = VANTAQ_SECTION_CAPABILITIES;
+                section                        = VANTAQ_SECTION_CAPABILITIES;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
                 continue;
             }
             if (strcmp(key, "network_access") == 0) {
-                section = VANTAQ_SECTION_NETWORK_ACCESS;
+                section                        = VANTAQ_SECTION_NETWORK_ACCESS;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
                 continue;
             }
 
@@ -712,7 +837,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         }
 
         if (indent != 2) {
-            loader_set_error(loader, "unsupported yaml indentation", NULL);
+            loader_set_error(loader, "unsupported yaml indentation");
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -806,7 +931,11 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
             }
 
-            mark_capability_seen(tmp, active_list);
+            if (!mark_capability_seen(tmp, active_list)) {
+                loader_set_error(loader, "duplicate capability field %s", key);
+                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            }
+
             free_list(get_list_mut(tmp, active_list));
 
             if (value[0] == '\0') {
@@ -823,6 +952,10 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         if (section == VANTAQ_SECTION_NETWORK_ACCESS) {
             if (strcmp(key, "allowed_subnets") == 0) {
+                if (tmp->has_allowed_subnets) {
+                    loader_set_error(loader, "duplicate field network_access.allowed_subnets");
+                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                }
                 tmp->has_allowed_subnets = true;
                 free_list(&tmp->allowed_subnets);
 
@@ -852,12 +985,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
-        loader_set_error(loader, "field found outside section", NULL);
+        loader_set_error(loader, "field found outside section");
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
     if (ferror(fp)) {
-        loader_set_error(loader, "failed to read config file", NULL);
+        loader_set_error(loader, "failed to read config file");
         return VANTAQ_CONFIG_STATUS_IO_ERROR;
     }
 
@@ -891,13 +1024,14 @@ enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader 
 
     loader->last_error[0] = '\0';
     VANTAQ_ZERO_STRUCT(tmp);
+    tmp.cbSize = sizeof(tmp);
 
     if (path == NULL || path[0] == '\0') {
         path = VANTAQ_DEFAULT_CONFIG_PATH;
     }
 
     if (strlen(path) >= sizeof(resolved_path)) {
-        loader_set_error(loader, "config path too long", NULL);
+        loader_set_error(loader, "config path too long");
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
     }
     memcpy(resolved_path, path, strlen(path) + 1);
@@ -936,35 +1070,70 @@ vantaq_config_loader_config(const struct vantaq_config_loader *loader) {
 }
 
 const char *vantaq_runtime_service_listen_host(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->service_listen_host;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, service_listen_host) +
+                             sizeof(config->service_listen_host)) {
+        return "";
+    }
+    return config->service_listen_host;
 }
 
 int vantaq_runtime_service_listen_port(const struct vantaq_runtime_config *config) {
-    return config == NULL ? 0 : config->service_listen_port;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, service_listen_port) +
+                             sizeof(config->service_listen_port)) {
+        return 0;
+    }
+    return config->service_listen_port;
 }
 
 const char *vantaq_runtime_service_version(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->service_version;
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, service_version) +
+                                               sizeof(config->service_version)) {
+        return "";
+    }
+    return config->service_version;
 }
 
 const char *vantaq_runtime_device_id(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->device_id;
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, device_id) +
+                                               sizeof(config->device_id)) {
+        return "";
+    }
+    return config->device_id;
 }
 
 const char *vantaq_runtime_device_model(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->model;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, model) + sizeof(config->model)) {
+        return "";
+    }
+    return config->model;
 }
 
 const char *vantaq_runtime_device_serial_number(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->serial_number;
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, serial_number) +
+                                               sizeof(config->serial_number)) {
+        return "";
+    }
+    return config->serial_number;
 }
 
 const char *vantaq_runtime_device_manufacturer(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->manufacturer;
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, manufacturer) +
+                                               sizeof(config->manufacturer)) {
+        return "";
+    }
+    return config->manufacturer;
 }
 
 const char *vantaq_runtime_device_firmware_version(const struct vantaq_runtime_config *config) {
-    return config == NULL ? "" : config->firmware_version;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, firmware_version) +
+                             sizeof(config->firmware_version)) {
+        return "";
+    }
+    return config->firmware_version;
 }
 
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,
@@ -985,12 +1154,21 @@ const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *c
 }
 
 size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config) {
-    return config == NULL ? 0 : config->allowed_subnets.count;
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, allowed_subnets) +
+                                               sizeof(config->allowed_subnets)) {
+        return 0;
+    }
+    return config->allowed_subnets.count;
 }
 
 const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config,
                                                size_t index) {
-    if (config == NULL || index >= config->allowed_subnets.count) {
+    if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, allowed_subnets) +
+                                               sizeof(config->allowed_subnets)) {
+        return NULL;
+    }
+
+    if (index >= config->allowed_subnets.count) {
         return NULL;
     }
 
@@ -998,5 +1176,10 @@ const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_confi
 }
 
 int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config) {
-    return config == NULL ? 0 : (config->dev_allow_all_networks ? 1 : 0);
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, dev_allow_all_networks) +
+                             sizeof(config->dev_allow_all_networks)) {
+        return 0;
+    }
+    return config->dev_allow_all_networks ? 1 : 0;
 }

@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-typedef void (*vantaq_write_fn)(void *ctx, const char *data);
+typedef int (*vantaq_write_fn)(void *ctx, const char *data);
 
 struct vantaq_app_io {
     vantaq_write_fn write_out;

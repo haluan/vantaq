@@ -4,6 +4,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "infrastructure/http_server.h"
+#include "infrastructure/config_loader.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -21,7 +22,20 @@
 #define VANTAQ_HTTP_REQ_BUF_SIZE 2048
 
 static volatile sig_atomic_t g_stop_requested = 0;
-static volatile sig_atomic_t g_listener_fd    = -1;
+static volatile int g_listener_fd             = -1;
+
+// Rule: Response JSON buffers must be sized based on maximum possible field lengths
+// Each field can be up to VANTAQ_MAX_FIELD_LEN, plus escaping overhead.
+// We use a safe multiplier to account for JSON escaping (\uXXXX etc).
+#define VANTAQ_JSON_ESC_FACTOR 6
+#define VANTAQ_JSON_FIELD_MAX (VANTAQ_MAX_FIELD_LEN * VANTAQ_JSON_ESC_FACTOR)
+
+#define VANTAQ_HEALTH_JSON_BUF_SIZE (VANTAQ_JSON_FIELD_MAX * 2 + 256)
+#define VANTAQ_IDENTITY_JSON_BUF_SIZE (VANTAQ_JSON_FIELD_MAX * 5 + 512)
+// For capabilities, we have 5 lists of up to VANTAQ_MAX_LIST_ITEMS strings.
+#define VANTAQ_CAPABILITIES_JSON_BUF_SIZE (VANTAQ_MAX_LIST_ITEMS * VANTAQ_JSON_FIELD_MAX * 5 + 2048)
+
+#define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
 struct vantaq_http_health_context {
     const char *service_name;
@@ -42,20 +56,24 @@ struct vantaq_http_health_context {
     const char *const *storage_modes;
     size_t storage_modes_count;
     struct timespec started_at;
+    vantaq_http_log_fn err_logger;
+    void *io_ctx;
 };
 
-static void log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
+static int log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
     if (logger != NULL && text != NULL) {
-        logger(ctx, text);
+        return logger(ctx, text);
     }
+    return 0;
 }
 
 static void handle_term_signal(int signum) {
     (void)signum;
     g_stop_requested = 1;
-    if (g_listener_fd >= 0) {
-        (void)close((int)g_listener_fd);
+    int fd           = g_listener_fd;
+    if (fd >= 0) {
         g_listener_fd = -1;
+        (void)close(fd);
     }
 }
 
@@ -98,7 +116,6 @@ static int send_status_response(int fd, int status_code) {
     if (n <= 0 || (size_t)n >= sizeof(response)) {
         return -1;
     }
-
     return write_all(fd, response, (size_t)n);
 }
 
@@ -115,77 +132,6 @@ static long long elapsed_seconds_since(const struct timespec *started_at) {
         return 0;
     }
     return sec;
-}
-
-static int send_health_response(int fd, const struct vantaq_http_health_context *ctx) {
-    char json[512];
-    char response[768];
-    int json_n;
-    int response_n;
-    long long uptime_seconds;
-
-    if (ctx == NULL || ctx->service_name == NULL || ctx->service_version == NULL) {
-        return -1;
-    }
-
-    uptime_seconds = elapsed_seconds_since(&ctx->started_at);
-    json_n         = snprintf(
-        json, sizeof(json),
-        "{\"status\":\"ok\",\"service\":\"%s\",\"version\":\"%s\",\"uptime_seconds\":%lld}\n",
-        ctx->service_name, ctx->service_version, uptime_seconds);
-    if (json_n <= 0 || (size_t)json_n >= sizeof(json)) {
-        return -1;
-    }
-
-    response_n = snprintf(response, sizeof(response),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %d\r\n"
-                          "Connection: close\r\n"
-                          "\r\n"
-                          "%s",
-                          json_n, json);
-    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
-        return -1;
-    }
-
-    return write_all(fd, response, (size_t)response_n);
-}
-
-static int send_identity_response(int fd, const struct vantaq_http_health_context *ctx) {
-    char json[640];
-    char response[896];
-    int json_n;
-    int response_n;
-
-    if (ctx == NULL || ctx->device_id == NULL || ctx->device_model == NULL ||
-        ctx->device_serial_number == NULL || ctx->device_manufacturer == NULL ||
-        ctx->device_firmware_version == NULL) {
-        return -1;
-    }
-
-    json_n = snprintf(json, sizeof(json),
-                      "{\"device_id\":\"%s\",\"model\":\"%s\",\"serial_number\":\"%s\","
-                      "\"manufacturer\":\"%s\",\"firmware_version\":\"%s\"}\n",
-                      ctx->device_id, ctx->device_model, ctx->device_serial_number,
-                      ctx->device_manufacturer, ctx->device_firmware_version);
-    if (json_n <= 0 || (size_t)json_n >= sizeof(json)) {
-        return -1;
-    }
-
-    response_n = snprintf(response, sizeof(response),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %d\r\n"
-                          "Connection: close\r\n"
-                          "\r\n"
-                          "%s",
-                          json_n, json);
-    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
-        return -1;
-    }
-
-    return write_all(fd, response, (size_t)response_n);
 }
 
 static int append_jsonf(char *buf, size_t buf_size, size_t *used, const char *fmt, ...) {
@@ -207,41 +153,200 @@ static int append_jsonf(char *buf, size_t buf_size, size_t *used, const char *fm
     return 0;
 }
 
-static int append_json_string_array(char *json, size_t json_size, size_t *used, const char *key,
+static int append_json_str(char *buf, size_t buf_size, size_t *used, const char *str) {
+    if (buf == NULL || used == NULL || str == NULL) {
+        return -1;
+    }
+
+    if (append_jsonf(buf, buf_size, used, "\"") != 0) {
+        return -1;
+    }
+
+    while (*str != '\0') {
+        const char *esc = NULL;
+        switch (*str) {
+        case '\"':
+            esc = "\\\"";
+            break;
+        case '\\':
+            esc = "\\\\";
+            break;
+        case '\b':
+            esc = "\\b";
+            break;
+        case '\f':
+            esc = "\\f";
+            break;
+        case '\n':
+            esc = "\\n";
+            break;
+        case '\r':
+            esc = "\\r";
+            break;
+        case '\t':
+            esc = "\\t";
+            break;
+        default:
+            if ((unsigned char)*str < 32) {
+                if (append_jsonf(buf, buf_size, used, "\\u%04x", (unsigned char)*str) != 0) {
+                    return -1;
+                }
+            } else {
+                if (*used >= buf_size - 1) {
+                    return -1;
+                }
+                buf[(*used)++] = *str;
+                buf[*used]     = '\0';
+            }
+            break;
+        }
+        if (esc != NULL) {
+            if (append_jsonf(buf, buf_size, used, "%s", esc) != 0) {
+                return -1;
+            }
+        }
+        str++;
+    }
+
+    if (append_jsonf(buf, buf_size, used, "\"") != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int append_json_string_array(char *buf, size_t json_size, size_t *used, const char *key,
                                     const char *const *items, size_t count, bool trailing_comma) {
     size_t i;
 
-    if (append_jsonf(json, json_size, used, "\"%s\":[", key) != 0) {
+    if (append_jsonf(buf, json_size, used, "\"%s\":[", key) != 0) {
         return -1;
     }
 
     for (i = 0; i < count; i++) {
-        if (items == NULL || items[i] == NULL) {
+        if (append_json_str(buf, json_size, used, items[i]) != 0) {
             return -1;
         }
-        if (i > 0 && append_jsonf(json, json_size, used, ",") != 0) {
-            return -1;
-        }
-        if (append_jsonf(json, json_size, used, "\"%s\"", items[i]) != 0) {
-            return -1;
+
+        if (i < count - 1) {
+            if (append_jsonf(buf, json_size, used, ",") != 0) {
+                return -1;
+            }
         }
     }
 
     if (trailing_comma) {
-        return append_jsonf(json, json_size, used, "],");
+        return append_jsonf(buf, json_size, used, "],");
     }
-    return append_jsonf(json, json_size, used, "]");
+    return append_jsonf(buf, json_size, used, "]");
+}
+
+static int send_health_response(int fd, const struct vantaq_http_health_context *ctx) {
+    char json[VANTAQ_HEALTH_JSON_BUF_SIZE];
+    char response[VANTAQ_HEALTH_JSON_BUF_SIZE + 256];
+    int json_n;
+    int response_n;
+    long long uptime_seconds;
+    size_t used;
+
+    VANTAQ_ZERO_STRUCT(json);
+    VANTAQ_ZERO_STRUCT(response);
+
+    if (ctx == NULL || ctx->service_name == NULL || ctx->service_version == NULL) {
+        return -1;
+    }
+
+    uptime_seconds = elapsed_seconds_since(&ctx->started_at);
+    used           = 0;
+
+    if (append_jsonf(json, sizeof(json), &used, "{\"status\":\"ok\",\"service\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->service_name) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"version\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->service_version) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"uptime_seconds\":%lld}\n", uptime_seconds) !=
+            0) {
+        return -1;
+    }
+
+    json_n = (int)used;
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %d\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          json_n, json);
+    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)response_n);
+}
+
+static int send_identity_response(int fd, const struct vantaq_http_health_context *ctx) {
+    char json[VANTAQ_IDENTITY_JSON_BUF_SIZE];
+    char response[VANTAQ_IDENTITY_JSON_BUF_SIZE + 256];
+    int json_n;
+    int response_n;
+    size_t used;
+
+    VANTAQ_ZERO_STRUCT(json);
+    VANTAQ_ZERO_STRUCT(response);
+
+    if (ctx == NULL || ctx->device_id == NULL || ctx->device_model == NULL ||
+        ctx->device_serial_number == NULL || ctx->device_manufacturer == NULL ||
+        ctx->device_firmware_version == NULL) {
+        return -1;
+    }
+
+    used = 0;
+    if (append_jsonf(json, sizeof(json), &used, "{\"device_id\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->device_id) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"model\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->device_model) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"serial_number\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->device_serial_number) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"manufacturer\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->device_manufacturer) != 0 ||
+        append_jsonf(json, sizeof(json), &used, ",\"firmware_version\":") != 0 ||
+        append_json_str(json, sizeof(json), &used, ctx->device_firmware_version) != 0 ||
+        append_jsonf(json, sizeof(json), &used, "}\n") != 0) {
+        return -1;
+    }
+
+    json_n = (int)used;
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %d\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          json_n, json);
+    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+        return -1;
+    }
+
+    return write_all(fd, response, (size_t)response_n);
 }
 
 static int send_capabilities_response(int fd, const struct vantaq_http_health_context *ctx) {
-    char json[2048];
-    char response[2304];
-    int response_n;
+    // Note: This buffer can be large (up to ~240KB with 64 items of 128 chars).
+    // In a production environment, dynamic allocation might be preferred.
+    static char json[VANTAQ_CAPABILITIES_JSON_BUF_SIZE];
+    char response_header[512];
     size_t used = 0;
 
-    if (ctx == NULL || ctx->supported_claims == NULL || ctx->supported_claims_count == 0 ||
-        ctx->signature_algorithms == NULL || ctx->evidence_formats == NULL ||
-        ctx->challenge_modes == NULL || ctx->storage_modes == NULL) {
+    VANTAQ_ZERO_STRUCT(response_header);
+    // static json is zeroed by default, but we should clear it for safety if reused
+    memset(json, 0, sizeof(json));
+
+    if (ctx == NULL || ctx->supported_claims == NULL || ctx->signature_algorithms == NULL ||
+        ctx->evidence_formats == NULL || ctx->challenge_modes == NULL ||
+        ctx->storage_modes == NULL) {
         return -1;
     }
 
@@ -261,46 +366,36 @@ static int send_capabilities_response(int fd, const struct vantaq_http_health_co
         return -1;
     }
 
-    response_n = snprintf(response, sizeof(response),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %zu\r\n"
-                          "Connection: close\r\n"
-                          "\r\n"
-                          "%s",
-                          used, json);
-    if (response_n <= 0 || (size_t)response_n >= sizeof(response)) {
+    int json_n   = (int)used;
+    int header_n = snprintf(response_header, sizeof(response_header),
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: application/json\r\n"
+                            "Content-Length: %d\r\n"
+                            "Connection: close\r\n"
+                            "\r\n",
+                            json_n);
+
+    if (header_n <= 0 || (size_t)header_n >= sizeof(response_header)) {
         return -1;
     }
 
-    return write_all(fd, response, (size_t)response_n);
+    if (write_all(fd, response_header, (size_t)header_n) != 0) {
+        return -1;
+    }
+
+    return write_all(fd, json, (size_t)json_n);
 }
 
-static int parse_request_line(char *buf, const char **method_out, const char **path_out) {
-    char *line_end;
-    char *method;
-    char *path;
-    char *version;
-
-    line_end = strstr(buf, "\r\n");
-    if (line_end == NULL) {
-        line_end = strchr(buf, '\n');
-    }
-    if (line_end == NULL) {
-        return -1;
-    }
-    *line_end = '\0';
-
-    method  = strtok(buf, " ");
-    path    = strtok(NULL, " ");
-    version = strtok(NULL, " ");
-
-    if (method == NULL || path == NULL || version == NULL) {
+static int parse_request_line(const char *buf, char *method, size_t method_size, char *path,
+                              size_t path_size) {
+    (void)method_size;
+    (void)path_size;
+    // We use sscanf to parse without mutating the input buffer.
+    // This preserves the raw request for diagnostic logging if needed.
+    if (sscanf(buf, "%15s %255s", method, path) != 2) {
         return -1;
     }
 
-    *method_out = method;
-    *path_out   = path;
     return 0;
 }
 
@@ -329,37 +424,66 @@ static int route_status_code(const char *method, const char *path) {
 
 static void handle_client(int client_fd, const struct vantaq_http_health_context *health_ctx) {
     char req_buf[VANTAQ_HTTP_REQ_BUF_SIZE];
-    ssize_t nread;
-    const char *method;
-    const char *path;
+    size_t total_read = 0;
+    char method[16];
+    char path[256];
     int status_code;
 
-    nread = recv(client_fd, req_buf, sizeof(req_buf) - 1, 0);
-    if (nread <= 0) {
+    VANTAQ_ZERO_STRUCT(req_buf);
+    VANTAQ_ZERO_STRUCT(method);
+    VANTAQ_ZERO_STRUCT(path);
+
+    while (total_read < sizeof(req_buf) - 1) {
+        ssize_t n = recv(client_fd, req_buf + total_read, sizeof(req_buf) - 1 - total_read, 0);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return;
+        }
+        if (n == 0) {
+            break;
+        }
+
+        total_read += (size_t)n;
+        req_buf[total_read] = '\0';
+        if (strstr(req_buf, "\n") != NULL) {
+            break;
+        }
+    }
+
+    if (total_read == 0) {
         return;
     }
 
-    req_buf[nread] = '\0';
-
-    if (parse_request_line(req_buf, &method, &path) != 0) {
+    if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
         (void)send_status_response(client_fd, 400);
         return;
     }
 
     status_code = route_status_code(method, path);
     if (status_code == 200) {
+        int rc;
         if (strcmp(path, "/v1/device/identity") == 0) {
-            (void)send_identity_response(client_fd, health_ctx);
-            return;
+            rc = send_identity_response(client_fd, health_ctx);
+        } else if (strcmp(path, "/v1/device/capabilities") == 0) {
+            rc = send_capabilities_response(client_fd, health_ctx);
+        } else {
+            rc = send_health_response(client_fd, health_ctx);
         }
-        if (strcmp(path, "/v1/device/capabilities") == 0) {
-            (void)send_capabilities_response(client_fd, health_ctx);
-            return;
+
+        if (rc != 0) {
+            log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                     "http server: failed to send response\n");
+            (void)send_status_response(client_fd, 500);
         }
-        (void)send_health_response(client_fd, health_ctx);
         return;
     }
-    (void)send_status_response(client_fd, status_code);
+
+    if (send_status_response(client_fd, status_code) != 0) {
+        log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                 "http server: failed to send status response\n");
+    }
 }
 
 static int create_listener(const char *host, int port, vantaq_http_log_fn err_logger, void *ctx) {
@@ -372,7 +496,9 @@ static int create_listener(const char *host, int port, vantaq_http_log_fn err_lo
     int one = 1;
     char msg[192];
 
-    memset(&hints, 0, sizeof(hints));
+    VANTAQ_ZERO_STRUCT(hints);
+    VANTAQ_ZERO_STRUCT(port_text);
+    VANTAQ_ZERO_STRUCT(msg);
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags    = AI_NUMERICSERV;
@@ -437,7 +563,11 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     char startup[192];
     struct vantaq_http_health_context health_ctx;
 
-    if (options == NULL || options->listen_host == NULL || options->listen_host[0] == '\0' ||
+    VANTAQ_ZERO_STRUCT(health_ctx);
+    VANTAQ_ZERO_STRUCT(startup);
+
+    if (options == NULL || options->cbSize < sizeof(struct vantaq_http_server_options) ||
+        options->listen_host == NULL || options->listen_host[0] == '\0' ||
         options->listen_port <= 0 || options->listen_port > 65535 ||
         options->service_name == NULL || options->service_name[0] == '\0' ||
         options->service_version == NULL || options->service_version[0] == '\0' ||
@@ -464,6 +594,12 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_term_signal;
     sigemptyset(&sa.sa_mask);
+    sigaddset(&sa.sa_mask, SIGTERM);
+    sigaddset(&sa.sa_mask, SIGINT);
+    // Note: sa_flags is intentionally 0 (no SA_RESTART). We want accept()
+    // and other blocking calls to return EINTR so that we can check
+    // g_stop_requested and shut down gracefully.
+    sa.sa_flags = 0;
 
     if (sigaction(SIGTERM, &sa, &old_term) != 0 || sigaction(SIGINT, &sa, &old_int) != 0) {
         (void)close(listener);
@@ -491,6 +627,8 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.challenge_modes_count      = options->challenge_modes_count;
     health_ctx.storage_modes              = options->storage_modes;
     health_ctx.storage_modes_count        = options->storage_modes_count;
+    health_ctx.err_logger                 = options->write_err;
+    health_ctx.io_ctx                     = options->io_ctx;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {
         health_ctx.started_at.tv_sec  = 0;
         health_ctx.started_at.tv_nsec = 0;
@@ -509,6 +647,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
                 break;
             }
             log_text(options->write_err, options->io_ctx, "http server: accept failed\n");
+            (void)usleep(100000);
             continue;
         }
 
@@ -516,8 +655,25 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (void)close(client_fd);
     }
 
-    g_listener_fd = -1;
-    (void)close(listener);
+    {
+        sigset_t set, oldset;
+        int fd;
+
+        sigemptyset(&set);
+        sigaddset(&set, SIGTERM);
+        sigaddset(&set, SIGINT);
+        (void)sigprocmask(SIG_BLOCK, &set, &oldset);
+
+        fd            = g_listener_fd;
+        g_listener_fd = -1;
+
+        (void)sigprocmask(SIG_SETMASK, &oldset, NULL);
+
+        if (fd >= 0) {
+            (void)close(fd);
+        }
+    }
+
     restore_signal(&old_term, &old_int);
 
     return VANTAQ_HTTP_SERVER_STATUS_OK;

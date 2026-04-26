@@ -4,9 +4,14 @@
 #include "application/app.h"
 #include "infrastructure/stdio_io.h"
 
-int main(int argc, char **argv) {
-    struct vantaq_stdio_io stdio_io;
+#include <string.h>
 
-    vantaq_stdio_io_init(&stdio_io);
-    return vantaq_app_run(argc, argv, &stdio_io.io);
+#define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
+
+int main(int argc, char **argv) {
+    struct vantaq_app_io io;
+    VANTAQ_ZERO_STRUCT(io);
+
+    vantaq_stdio_io_init(&io);
+    return vantaq_app_run(argc, argv, &io);
 }

@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-typedef void (*vantaq_http_log_fn)(void *ctx, const char *text);
+typedef int (*vantaq_http_log_fn)(void *ctx, const char *text);
 
 enum vantaq_http_server_status {
     VANTAQ_HTTP_SERVER_STATUS_OK = 0,
@@ -17,6 +17,7 @@ enum vantaq_http_server_status {
 };
 
 struct vantaq_http_server_options {
+    size_t cbSize;
     const char *listen_host;
     int listen_port;
     const char *service_name;

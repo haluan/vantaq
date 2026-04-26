@@ -6,10 +6,6 @@
 
 #include "application/app.h"
 
-struct vantaq_stdio_io {
-    struct vantaq_app_io io;
-};
-
-void vantaq_stdio_io_init(struct vantaq_stdio_io *stdio_io);
+void vantaq_stdio_io_init(struct vantaq_app_io *io);
 
 #endif

@@ -36,14 +36,16 @@ static void append_text(char *dst, size_t dst_size, const char *src) {
     dst[used + incoming] = '\0';
 }
 
-static void capture_out(void *ctx, const char *data) {
+static int capture_out(void *ctx, const char *data) {
     test_io_buffer *buffer = (test_io_buffer *)ctx;
     append_text(buffer->out, sizeof(buffer->out), data);
+    return 0;
 }
 
-static void capture_err(void *ctx, const char *data) {
+static int capture_err(void *ctx, const char *data) {
     test_io_buffer *buffer = (test_io_buffer *)ctx;
     append_text(buffer->err, sizeof(buffer->err), data);
+    return 0;
 }
 
 static int write_temp_yaml(const char *content, char *path_out, size_t path_out_size) {

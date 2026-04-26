@@ -7,6 +7,53 @@
 #include <stddef.h>
 
 #define VANTAQ_DEFAULT_CONFIG_PATH "/etc/vantaqd/vantaqd.yaml"
+#define VANTAQ_MAX_LIST_ITEMS 64
+#define VANTAQ_MAX_FIELD_LEN 128
+
+#include <stdbool.h>
+
+struct vantaq_string_list {
+    char *items[VANTAQ_MAX_LIST_ITEMS];
+    size_t count;
+};
+
+struct vantaq_runtime_config {
+    size_t cbSize;
+
+    char service_listen_host[VANTAQ_MAX_FIELD_LEN];
+    int service_listen_port;
+    char service_version[VANTAQ_MAX_FIELD_LEN];
+
+    char device_id[VANTAQ_MAX_FIELD_LEN];
+    char model[VANTAQ_MAX_FIELD_LEN];
+    char serial_number[VANTAQ_MAX_FIELD_LEN];
+    char manufacturer[VANTAQ_MAX_FIELD_LEN];
+    char firmware_version[VANTAQ_MAX_FIELD_LEN];
+
+    struct vantaq_string_list supported_claims;
+    struct vantaq_string_list signature_algorithms;
+    struct vantaq_string_list evidence_formats;
+    struct vantaq_string_list challenge_modes;
+    struct vantaq_string_list storage_modes;
+    struct vantaq_string_list allowed_subnets;
+    bool dev_allow_all_networks;
+
+    bool has_service_listen_host;
+    bool has_service_listen_port;
+    bool has_service_version;
+    bool has_device_id;
+    bool has_model;
+    bool has_serial_number;
+    bool has_manufacturer;
+    bool has_firmware_version;
+    bool has_supported_claims;
+    bool has_signature_algorithms;
+    bool has_evidence_formats;
+    bool has_challenge_modes;
+    bool has_storage_modes;
+    bool has_allowed_subnets;
+    bool has_dev_allow_all_networks;
+};
 
 enum vantaq_config_status {
     VANTAQ_CONFIG_STATUS_OK = 0,
@@ -29,14 +76,15 @@ enum vantaq_network_subnet_list {
 };
 
 struct vantaq_config_loader;
-struct vantaq_runtime_config;
 
 struct vantaq_config_loader *vantaq_config_loader_create(void);
 void vantaq_config_loader_destroy(struct vantaq_config_loader *loader);
 
-enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader *loader, const char *path);
+enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader *loader,
+                                                    const char *path);
 const char *vantaq_config_loader_last_error(const struct vantaq_config_loader *loader);
-const struct vantaq_runtime_config *vantaq_config_loader_config(const struct vantaq_config_loader *loader);
+const struct vantaq_runtime_config *
+vantaq_config_loader_config(const struct vantaq_config_loader *loader);
 
 const char *vantaq_runtime_service_listen_host(const struct vantaq_runtime_config *config);
 int vantaq_runtime_service_listen_port(const struct vantaq_runtime_config *config);
@@ -48,11 +96,13 @@ const char *vantaq_runtime_device_serial_number(const struct vantaq_runtime_conf
 const char *vantaq_runtime_device_manufacturer(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_device_firmware_version(const struct vantaq_runtime_config *config);
 
-size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config, enum vantaq_capability_list list);
-const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *config, enum vantaq_capability_list list,
-                                           size_t index);
+size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,
+                                       enum vantaq_capability_list list);
+const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *config,
+                                           enum vantaq_capability_list list, size_t index);
 size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config);
-const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config, size_t index);
+const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config,
+                                               size_t index);
 int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
 
 #endif

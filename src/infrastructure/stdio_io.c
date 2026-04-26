@@ -5,18 +5,31 @@
 
 #include <stdio.h>
 
-static void vantaq_write_stdout(void *ctx, const char *data) {
+__attribute__((weak)) int vantaq_write_stdout(void *ctx, const char *data) {
     (void)ctx;
-    fputs(data, stdout);
+    if (data != NULL) {
+        if (fputs(data, stdout) == EOF) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
-static void vantaq_write_stderr(void *ctx, const char *data) {
+__attribute__((weak)) int vantaq_write_stderr(void *ctx, const char *data) {
     (void)ctx;
-    fputs(data, stderr);
+    if (data != NULL) {
+        if (fputs(data, stderr) == EOF) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
-void vantaq_stdio_io_init(struct vantaq_stdio_io *stdio_io) {
-    stdio_io->io.write_out = vantaq_write_stdout;
-    stdio_io->io.write_err = vantaq_write_stderr;
-    stdio_io->io.ctx       = NULL;
+void vantaq_stdio_io_init(struct vantaq_app_io *io) {
+    if (io == NULL) {
+        return;
+    }
+    io->write_out = vantaq_write_stdout;
+    io->write_err = vantaq_write_stderr;
+    io->ctx       = NULL;
 }
