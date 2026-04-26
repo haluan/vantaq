@@ -3,7 +3,7 @@ CTEST ?= ctest
 CMAKE_BUILD_DIR ?= build/cmake
 COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
 
-.PHONY: all cmake-configure build test clean format dev-certs docker-device-build integration-test-subnet-allowed integration-test-subnet-denied integration-test-mtls
+.PHONY: all cmake-configure build test clean format dev-certs docker-device-build integration-test-subnet-allowed integration-test-subnet-denied integration-test-mtls integration-test-mtls-identity
 
 all: build
 
@@ -42,3 +42,7 @@ integration-test-subnet-denied:
 integration-test-mtls:
 	$(COMPOSE) up --build -d device-1
 	./scripts/mtls_transport_smoke.sh
+
+integration-test-mtls-identity:
+	$(COMPOSE) up --build -d device-1
+	./scripts/mtls_identity_smoke.sh

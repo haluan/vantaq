@@ -400,12 +400,16 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
         request_status_and_body(port, "GET /v1/device/identity HTTP/1.1\r\nHost: localhost\r\n\r\n",
                                 &identity_status, identity_body, sizeof(identity_body)),
         0);
-    assert_int_equal(identity_status, 200);
-    assert_non_null(strstr(identity_body, "\"device_id\":\"edge-gw-001\""));
-    assert_non_null(strstr(identity_body, "\"model\":\"edge-gateway-v1\""));
-    assert_non_null(strstr(identity_body, "\"serial_number\":\"SN-001\""));
-    assert_non_null(strstr(identity_body, "\"manufacturer\":\"ExampleCorp\""));
-    assert_non_null(strstr(identity_body, "\"firmware_version\":\"0.1.0-demo\""));
+    assert_int_equal(identity_status, 401);
+    assert_non_null(strstr(identity_body, "\"error\""));
+    assert_non_null(strstr(identity_body, "\"code\":\"MTLS_REQUIRED\""));
+    assert_non_null(
+        strstr(identity_body, "\"message\":\"Valid verifier client certificate is required.\""));
+    assert_null(strstr(identity_body, "\"device_id\":"));
+    assert_null(strstr(identity_body, "\"model\":"));
+    assert_null(strstr(identity_body, "\"serial_number\":"));
+    assert_null(strstr(identity_body, "\"manufacturer\":"));
+    assert_null(strstr(identity_body, "\"firmware_version\":"));
     assert_int_equal(request_status_and_body(
                          port, "GET /v1/device/capabilities HTTP/1.1\r\nHost: localhost\r\n\r\n",
                          &capabilities_status, capabilities_body, sizeof(capabilities_body)),

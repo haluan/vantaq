@@ -698,7 +698,8 @@ static void handle_client(struct vantaq_http_connection *connection,
         goto cleanup;
     }
 
-    if (status_code == 200 && strcmp(path, "/v1/health") == 0 &&
+    if (status_code == 200 &&
+        (strcmp(path, "/v1/health") == 0 || strcmp(path, "/v1/device/identity") == 0) &&
         !vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
         if (send_mtls_required_response(connection) != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
