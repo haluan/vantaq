@@ -24,6 +24,10 @@ enum vantaq_capability_list {
     VANTAQ_CAPABILITY_STORAGE_MODES,
 };
 
+enum vantaq_network_subnet_list {
+    VANTAQ_NETWORK_ALLOWED_SUBNETS = 0,
+};
+
 struct vantaq_config_loader;
 struct vantaq_runtime_config;
 
@@ -47,5 +51,8 @@ const char *vantaq_runtime_device_firmware_version(const struct vantaq_runtime_c
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config, enum vantaq_capability_list list);
 const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *config, enum vantaq_capability_list list,
                                            size_t index);
+size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config, size_t index);
+int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
 
 #endif

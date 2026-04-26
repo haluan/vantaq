@@ -3,6 +3,7 @@
 
 #include "infrastructure/config_loader.h"
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -23,6 +24,7 @@ enum vantaq_section {
     VANTAQ_SECTION_SERVICE,
     VANTAQ_SECTION_DEVICE_IDENTITY,
     VANTAQ_SECTION_CAPABILITIES,
+    VANTAQ_SECTION_NETWORK_ACCESS,
 };
 
 struct vantaq_string_list {
@@ -46,6 +48,8 @@ struct vantaq_runtime_config {
     struct vantaq_string_list evidence_formats;
     struct vantaq_string_list challenge_modes;
     struct vantaq_string_list storage_modes;
+    struct vantaq_string_list allowed_subnets;
+    bool dev_allow_all_networks;
 
     bool has_service_listen_host;
     bool has_service_listen_port;
@@ -60,6 +64,8 @@ struct vantaq_runtime_config {
     bool has_evidence_formats;
     bool has_challenge_modes;
     bool has_storage_modes;
+    bool has_allowed_subnets;
+    bool has_dev_allow_all_networks;
 };
 
 struct vantaq_config_loader {
@@ -203,6 +209,7 @@ static void free_config_lists(struct vantaq_runtime_config *config) {
     free_list(&config->evidence_formats);
     free_list(&config->challenge_modes);
     free_list(&config->storage_modes);
+    free_list(&config->allowed_subnets);
 }
 
 static enum vantaq_config_status copy_string_to_field(struct vantaq_config_loader *loader,
@@ -400,6 +407,82 @@ static enum vantaq_config_status parse_int(struct vantaq_config_loader *loader,
     return VANTAQ_CONFIG_STATUS_OK;
 }
 
+static enum vantaq_config_status parse_bool(struct vantaq_config_loader *loader,
+                                            const char *field_name, const char *value_raw,
+                                            bool *out, bool *seen) {
+    char local[VANTAQ_MAX_FIELD_LEN];
+    size_t len;
+    char *value;
+
+    if (value_raw == NULL || out == NULL || seen == NULL) {
+        return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    len = strlen(value_raw);
+    if (len >= sizeof(local)) {
+        loader_set_error(loader, "value too long for %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+
+    memcpy(local, value_raw, len + 1);
+    value = trim(local);
+    if (strcmp(value, "true") == 0) {
+        *out  = true;
+        *seen = true;
+        return VANTAQ_CONFIG_STATUS_OK;
+    }
+    if (strcmp(value, "false") == 0) {
+        *out  = false;
+        *seen = true;
+        return VANTAQ_CONFIG_STATUS_OK;
+    }
+
+    loader_set_error(loader, "invalid boolean for %s", field_name);
+    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+}
+
+static bool is_valid_ipv4_cidr(const char *cidr) {
+    char local[VANTAQ_MAX_FIELD_LEN];
+    char *slash;
+    char *prefix_text;
+    char *endptr;
+    long prefix;
+    struct in_addr addr;
+    size_t len;
+
+    if (cidr == NULL) {
+        return false;
+    }
+
+    len = strlen(cidr);
+    if (len == 0 || len >= sizeof(local)) {
+        return false;
+    }
+
+    memcpy(local, cidr, len + 1);
+    slash = strchr(local, '/');
+    if (slash == NULL) {
+        return false;
+    }
+
+    *slash      = '\0';
+    prefix_text = slash + 1;
+    if (local[0] == '\0' || prefix_text[0] == '\0') {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, local, &addr) != 1) {
+        return false;
+    }
+
+    prefix = strtol(prefix_text, &endptr, 10);
+    if (*endptr != '\0' || prefix < 0 || prefix > 32) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool list_contains(const struct vantaq_string_list *list, const char *needle) {
     size_t i;
 
@@ -474,6 +557,15 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
         loader_set_error(loader, "missing required field %s", "capabilities.storage_modes");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
+    if (config->has_allowed_subnets) {
+        size_t i;
+        for (i = 0; i < config->allowed_subnets.count; i++) {
+            if (!is_valid_ipv4_cidr(config->allowed_subnets.items[i])) {
+                loader_set_error(loader, "invalid CIDR in %s", config->allowed_subnets.items[i]);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+    }
 
     return VANTAQ_CONFIG_STATUS_OK;
 }
@@ -529,6 +621,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
     char line[VANTAQ_MAX_LINE_LEN];
     enum vantaq_section section             = VANTAQ_SECTION_NONE;
     bool has_active_capability_list         = false;
+    bool has_active_network_subnet_list     = false;
     enum vantaq_capability_list active_list = VANTAQ_CAPABILITY_SUPPORTED_CLAIMS;
 
     while (fgets(line, sizeof(line), fp) != NULL) {
@@ -551,21 +644,35 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         indent = (size_t)(cursor - line);
 
         if (cursor[0] == '-' && (cursor[1] == ' ' || cursor[1] == '\t')) {
-            if (indent != 4 || section != VANTAQ_SECTION_CAPABILITIES ||
-                !has_active_capability_list) {
+            if (indent != 4) {
                 loader_set_error(loader, "invalid list indentation", NULL);
                 return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
             }
 
-            rc = parse_list_item(loader, cursor + 1, get_list_mut(tmp, active_list),
-                                 "capabilities list");
-            if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                return rc;
+            if (section == VANTAQ_SECTION_CAPABILITIES && has_active_capability_list) {
+                rc = parse_list_item(loader, cursor + 1, get_list_mut(tmp, active_list),
+                                     "capabilities list");
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
             }
-            continue;
+
+            if (section == VANTAQ_SECTION_NETWORK_ACCESS && has_active_network_subnet_list) {
+                rc = parse_list_item(loader, cursor + 1, &tmp->allowed_subnets,
+                                     "network_access.allowed_subnets");
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "invalid list indentation", NULL);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
-        has_active_capability_list = false;
+        has_active_capability_list     = false;
+        has_active_network_subnet_list = false;
 
         colon = strchr(cursor, ':');
         if (colon == NULL) {
@@ -593,6 +700,10 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
             if (strcmp(key, "capabilities") == 0) {
                 section = VANTAQ_SECTION_CAPABILITIES;
+                continue;
+            }
+            if (strcmp(key, "network_access") == 0) {
+                section = VANTAQ_SECTION_NETWORK_ACCESS;
                 continue;
             }
 
@@ -708,6 +819,37 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 return rc;
             }
             continue;
+        }
+
+        if (section == VANTAQ_SECTION_NETWORK_ACCESS) {
+            if (strcmp(key, "allowed_subnets") == 0) {
+                tmp->has_allowed_subnets = true;
+                free_list(&tmp->allowed_subnets);
+
+                if (value[0] == '\0') {
+                    has_active_network_subnet_list = true;
+                    continue;
+                }
+
+                rc = parse_inline_list(loader, value, &tmp->allowed_subnets,
+                                       "network_access.allowed_subnets");
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            if (strcmp(key, "dev_allow_all_networks") == 0) {
+                rc = parse_bool(loader, "network_access.dev_allow_all_networks", value,
+                                &tmp->dev_allow_all_networks, &tmp->has_dev_allow_all_networks);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown network_access field %s", key);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
         loader_set_error(loader, "field found outside section", NULL);
@@ -840,4 +982,21 @@ const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *c
     }
 
     return target->items[index];
+}
+
+size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config) {
+    return config == NULL ? 0 : config->allowed_subnets.count;
+}
+
+const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config,
+                                               size_t index) {
+    if (config == NULL || index >= config->allowed_subnets.count) {
+        return NULL;
+    }
+
+    return config->allowed_subnets.items[index];
+}
+
+int vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config) {
+    return config == NULL ? 0 : (config->dev_allow_all_networks ? 1 : 0);
 }

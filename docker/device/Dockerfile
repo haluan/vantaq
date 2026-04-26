@@ -38,6 +38,10 @@ capabilities:
   evidence_formats: []
   challenge_modes: []
   storage_modes: []
+
+network_access:
+  allowed_subnets: []
+  dev_allow_all_networks: true
 YAML
 
 COPY --from=builder /workspace/bin/vantaqd /usr/local/bin/vantaqd
