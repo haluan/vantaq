@@ -120,7 +120,7 @@ static void test_bounded_append_truncates_old_records(void **state) {
     struct vantaq_audit_log *log = NULL;
     struct vantaq_audit_event first;
     struct vantaq_audit_event second;
-    size_t max_bytes = 180;
+    size_t max_bytes = 256;
 
     assert_int_equal(make_temp_path(path, sizeof(path)), 0);
     assert_int_equal(vantaq_audit_log_create(path, max_bytes, &log), VANTAQ_AUDIT_LOG_STATUS_OK);

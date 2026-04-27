@@ -51,6 +51,11 @@ network_access:
     - 0.0.0.0/0
   dev_allow_all_networks: true
 
+challenge:
+  ttl_seconds: 30
+  max_global: 100
+  max_per_verifier: 10
+
 audit:
   max_bytes: 1048576
   path: /var/log/vantaqd/audit.log

@@ -77,7 +77,7 @@ static void test_generate_nonce_invalid_args(void **state) {
                        VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
 
     // Too short nonce
-    s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, sizeof(s->hex), 15),
+    s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, sizeof(s->hex), 7),
                        VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
 
     // Buffer too small

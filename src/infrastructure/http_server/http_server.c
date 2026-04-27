@@ -598,6 +598,12 @@ static void handle_client(struct vantaq_http_connection *connection,
         }
     }
 
+    {
+        static _Atomic uint64_t request_counter = 0;
+        snprintf(request_ctx.request_id, sizeof(request_ctx.request_id), "req-%06llu",
+                 (unsigned long long)++request_counter);
+    }
+
     tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
     tv.tv_usec = 0;
     if (setsockopt(connection->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
@@ -656,15 +662,10 @@ static void handle_client(struct vantaq_http_connection *connection,
     }
 
     if (subnet_decision == VANTAQ_SUBNET_POLICY_DECISION_DENY) {
-        static uint64_t request_counter = 0;
-        char request_id[32];
         struct vantaq_audit_event audit_event;
         const char *peer_text = request_ctx.peer_ip_ok
                                     ? request_ctx.peer_ipv4
                                     : vantaq_peer_address_status_text(request_ctx.peer_status);
-
-        (void)snprintf(request_id, sizeof(request_id), "req-%06llu",
-                       (unsigned long long)++request_counter);
 
         VANTAQ_ZERO_STRUCT(audit_event);
         audit_event.cbSize                 = sizeof(audit_event);
@@ -674,7 +675,7 @@ static void handle_client(struct vantaq_http_connection *connection,
         audit_event.path       = path;
         audit_event.result     = "DENY";
         audit_event.reason     = "SUBNET_NOT_ALLOWED";
-        audit_event.request_id = request_id;
+        audit_event.request_id = request_ctx.request_id;
 
         audit_status = vantaq_audit_log_append(health_ctx->audit_log, &audit_event);
         if (audit_status != VANTAQ_AUDIT_LOG_STATUS_OK) {
@@ -689,7 +690,7 @@ static void handle_client(struct vantaq_http_connection *connection,
                        method, path, peer_text);
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
 
-        if (send_subnet_denied_response(connection, request_id) != 0) {
+        if (send_subnet_denied_response(connection, request_ctx.request_id) != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                            "http server: failed to send subnet denied response\n");
         }

@@ -233,6 +233,9 @@ vantaq_audit_log_serialize_event(const struct vantaq_audit_event *event, char *o
         append_json_escaped(out_line, out_line_size, &used, event->result) != 0 ||
         appendf(out_line, out_line_size, &used, "\",\"reason\":\"") != 0 ||
         append_json_escaped(out_line, out_line_size, &used, event->reason) != 0 ||
+        appendf(out_line, out_line_size, &used, "\",\"verifier_id\":\"") != 0 ||
+        append_json_escaped(out_line, out_line_size, &used,
+                            event->verifier_id ? event->verifier_id : "") != 0 ||
         appendf(out_line, out_line_size, &used, "\",\"request_id\":\"") != 0 ||
         append_json_escaped(out_line, out_line_size, &used, event->request_id) != 0 ||
         appendf(out_line, out_line_size, &used, "\"}\n") != 0) {

@@ -53,7 +53,8 @@ vantaq_create_challenge(struct vantaq_challenge_store *store, const char *verifi
         return VANTAQ_CREATE_CHALLENGE_STATUS_ERROR_INTERNAL;
     }
 
-    // Store it
+    // Store it (cleanup expired first)
+    store->cleanup_expired(store, now_ms);
     store_status = store->insert(store, challenge);
     if (store_status != VANTAQ_CHALLENGE_STORE_OK) {
         vantaq_challenge_destroy(challenge);

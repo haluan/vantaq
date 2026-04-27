@@ -50,6 +50,7 @@ struct vantaq_http_request_context {
     char peer_ipv4[16]; // INET_ADDRSTRLEN
     bool peer_ip_ok;
     int peer_status; // enum vantaq_peer_address_status
+    char request_id[32];
     struct vantaq_verifier_auth_context verifier_auth;
 };
 

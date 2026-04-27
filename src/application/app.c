@@ -339,7 +339,9 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             (void)vantaq_write(io->write_out, io->ctx, "vantaqd startup\n");
         }
 
-        store = vantaq_challenge_store_memory_create(100, 10);
+        store =
+            vantaq_challenge_store_memory_create(vantaq_runtime_challenge_max_global(config),
+                                                 vantaq_runtime_challenge_max_per_verifier(config));
         if (store == NULL) {
             (void)vantaq_write(io->write_err, io->ctx, "failed to initialize challenge store\n");
             exit_code = 70;

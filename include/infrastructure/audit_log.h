@@ -23,6 +23,7 @@ struct vantaq_audit_event {
     const char *path;
     const char *result;
     const char *reason;
+    const char *verifier_id;
     const char *request_id;
 };
 

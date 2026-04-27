@@ -201,6 +201,7 @@ rm -rf tests/integration/mtls/certs
      - Rejection of missing/untrusted certificates.
      - Rejection of unknown Verifier IDs (403).
      - Role-based access to Verifier Metadata API.
+     - Attestation Challenge API (creation, audit, binding, uniqueness, and expiry).
 
 ### Verifier Metadata API
 
@@ -218,3 +219,47 @@ Retrieve metadata for a specific verifier.
 curl --cacert ca.crt --cert verifier.crt --key verifier.key \
      https://localhost:8443/v1/security/verifiers/govt-verifier-01
 ```
+
+### Attestation Challenge API
+
+Request a new cryptographic challenge for remote attestation.
+
+**Endpoint**: `POST /v1/attestation/challenge`
+
+**Authorization**:
+- Requires a valid mTLS certificate from an allowlisted verifier.
+- The verifier must have permission to call `POST /v1/attestation/challenge` (or have `*` permissions).
+- Identity is automatically bound from the certificate; the server rejects spoofed `verifier_id` in the request body.
+
+**Example Request (using curl with mTLS)**:
+
+```bash
+curl --cacert ca.crt --cert verifier.crt --key verifier.key \
+     -X POST -H "Content-Type: application/json" \
+     -d '{"purpose": "remote_attestation", "requested_ttl_seconds": 60}' \
+     https://localhost:8443/v1/attestation/challenge
+```
+
+**Example via Docker Compose**:
+
+```bash
+docker compose run --rm allowed-verifier \
+  curl -s --cacert /certs/device-ca.crt \
+       --cert /certs/govt-verifier-01.crt \
+       --key /certs/govt-verifier-01.key \
+       -X POST -H "Content-Type: application/json" \
+       -d '{"purpose": "remote_attestation"}' \
+       https://device-1:8443/v1/attestation/challenge
+```
+
+**Configuration (`vantaqd.yaml`)**:
+
+```yaml
+challenge:
+  ttl_seconds: 30       # Default TTL if not specified by client
+  max_global: 1000      # Global capacity limit for pending challenges
+  max_per_verifier: 100 # Per-verifier capacity limit
+```
+
+**Audit Logs**:
+Challenge creation attempts (success and failure) are logged to the audit log with `verifier_id` and `request_id` correlation.

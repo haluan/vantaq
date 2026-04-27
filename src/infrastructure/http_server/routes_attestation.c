@@ -3,9 +3,33 @@
 
 #include "application/attestation_challenge/create_challenge.h"
 #include "http_server_internal.h"
+#include "infrastructure/audit_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+static void audit_challenge_creation(const struct vantaq_http_health_context *ctx,
+                                     const struct vantaq_http_request_context *req_ctx,
+                                     const char *result, const char *reason) {
+    struct vantaq_audit_event event;
+    if (!ctx->audit_log) {
+        return;
+    }
+
+    memset(&event, 0, sizeof(event));
+    event.cbSize                 = sizeof(event);
+    event.time_utc_epoch_seconds = time(NULL);
+    event.source_ip              = req_ctx->peer_ipv4;
+    event.method                 = "POST";
+    event.path                   = "/v1/attestation/challenge";
+    event.result                 = result;
+    event.reason                 = reason;
+    event.verifier_id            = req_ctx->verifier_auth.identity.id;
+    event.request_id             = req_ctx->request_id;
+
+    vantaq_audit_log_append(ctx->audit_log, &event);
+}
 
 #define VANTAQ_CHALLENGE_JSON_BUF_SIZE 1024
 
@@ -33,11 +57,13 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
 
     // Check purpose (simplified for MVP)
     if (strstr(body_start, "\"purpose\"") == NULL) {
+        audit_challenge_creation(ctx, req_ctx, "denied", "missing_purpose");
         return vantaq_http_send_status_response(connection, 400);
     }
 
     // Do not accept verifier_id from request body (prevent spoofing)
     if (strstr(body_start, "\"verifier_id\"") != NULL) {
+        audit_challenge_creation(ctx, req_ctx, "denied", "spoofed_verifier_id");
         return vantaq_http_send_status_response(connection, 400);
     }
 
@@ -49,6 +75,7 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
         if (val != NULL) {
             requested_ttl = atol(val + 1);
             if (requested_ttl <= 0) {
+                audit_challenge_creation(ctx, req_ctx, "denied", "invalid_ttl");
                 return vantaq_http_send_status_response(connection, 400);
             }
             if (requested_ttl < ttl) {
@@ -60,10 +87,12 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     // Call application service
     status = vantaq_create_challenge(ctx->challenge_store, req_ctx->verifier_auth.identity.id,
                                      purpose, ttl, &challenge);
-
     if (status != VANTAQ_CREATE_CHALLENGE_STATUS_OK) {
+        audit_challenge_creation(ctx, req_ctx, "denied", "internal_error");
         return vantaq_http_send_status_response(connection, 500);
     }
+
+    audit_challenge_creation(ctx, req_ctx, "allowed", "ok");
 
     // Construct response JSON
     n = snprintf(json, sizeof(json),

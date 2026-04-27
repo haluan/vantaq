@@ -63,6 +63,8 @@ struct vantaq_runtime_config {
     struct vantaq_verifier_config verifiers[VANTAQ_MAX_LIST_ITEMS];
     size_t verifiers_count;
     size_t challenge_ttl_seconds;
+    size_t challenge_max_global;
+    size_t challenge_max_per_verifier;
 
     bool has_service_listen_host;
     bool has_service_listen_port;
@@ -88,6 +90,8 @@ struct vantaq_runtime_config {
     bool has_audit_log_path;
     bool has_verifiers;
     bool has_challenge_ttl_seconds;
+    bool has_challenge_max_global;
+    bool has_challenge_max_per_verifier;
 };
 
 enum vantaq_config_status {
@@ -161,5 +165,7 @@ size_t vantaq_runtime_verifier_allowed_api_count(const struct vantaq_runtime_con
 const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime_config *config,
                                                      size_t verifier_index, size_t api_index);
 size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config);
 
 #endif

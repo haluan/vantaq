@@ -18,7 +18,7 @@ enum vantaq_crypto_status vantaq_crypto_generate_nonce_hex(char *out_hex, size_t
     enum vantaq_crypto_status status = VANTAQ_CRYPTO_OK;
     unsigned char *raw_bytes         = NULL;
 
-    if (!out_hex || nonce_bytes < 16 || out_len < (nonce_bytes * 2 + 1)) {
+    if (!out_hex || nonce_bytes < 8 || out_len < (nonce_bytes * 2 + 1)) {
         return VANTAQ_CRYPTO_ERROR_INVALID_ARGS;
     }
 

@@ -1380,6 +1380,23 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 }
                 continue;
             }
+            if (strcmp(key, "max_global") == 0) {
+                rc = parse_size_t(loader, "challenge.max_global", value, &tmp->challenge_max_global,
+                                  &tmp->has_challenge_max_global);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "max_per_verifier") == 0) {
+                rc = parse_size_t(loader, "challenge.max_per_verifier", value,
+                                  &tmp->challenge_max_per_verifier,
+                                  &tmp->has_challenge_max_per_verifier);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
 
             loader_set_error(loader, "unknown challenge field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
@@ -1740,13 +1757,14 @@ const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime
 }
 
 size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config) {
-    if (config == NULL ||
-        config->cbSize < offsetof(struct vantaq_runtime_config, challenge_ttl_seconds) +
-                             sizeof(config->challenge_ttl_seconds)) {
-        return 30;
-    }
-    if (!config->has_challenge_ttl_seconds) {
-        return 30;
-    }
-    return config->challenge_ttl_seconds;
+    return (config && config->has_challenge_ttl_seconds) ? config->challenge_ttl_seconds : 30;
+}
+
+size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *config) {
+    return (config && config->has_challenge_max_global) ? config->challenge_max_global : 1000;
+}
+
+size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config) {
+    return (config && config->has_challenge_max_per_verifier) ? config->challenge_max_per_verifier
+                                                              : 100;
 }

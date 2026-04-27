@@ -21,6 +21,7 @@ verifiers:
       - GET /v1/device/identity
       - GET /v1/device/capabilities
       - GET /v1/security/verifiers/{verifier_id}
+      - POST /v1/attestation/challenge
 
 device_identity:
   device_id: edge-gw-001
@@ -45,3 +46,8 @@ network_access:
 audit:
   max_bytes: 65536
   path: /var/lib/vantaqd/audit.log
+
+challenge:
+  ttl_seconds: 30
+  max_global: 1000
+  max_per_verifier: 100

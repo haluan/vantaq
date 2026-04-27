@@ -26,6 +26,7 @@ services:
     volumes:
       - .:/tests
       - ./certs:/certs
+      - vantaq-logs:/var/log/vantaqd:ro
     working_dir: /tests
     entrypoint: /bin/sh
     command: ./run.sh
