@@ -31,6 +31,7 @@ wait_for_server
 ./test_unknown_verifier.sh
 ./test_metadata_authz.sh
 ./test_post_challenge.sh
+./test_challenge_verifier_binding.sh
 
 echo ""
 echo "ALL MTLS INTEGRATION TESTS PASSED!"

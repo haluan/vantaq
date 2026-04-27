@@ -35,6 +35,11 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
         return vantaq_http_send_status_response(connection, 400);
     }
 
+    // Do not accept verifier_id from request body (prevent spoofing)
+    if (strstr(body_start, "\"verifier_id\"") != NULL) {
+        return vantaq_http_send_status_response(connection, 400);
+    }
+
     // Call application service
     status = vantaq_create_challenge(ctx->challenge_store, req_ctx->verifier_auth.identity.id,
                                      purpose, ttl, &challenge);

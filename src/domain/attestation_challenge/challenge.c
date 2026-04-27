@@ -20,7 +20,8 @@ struct vantaq_challenge {
 struct vantaq_challenge *vantaq_challenge_create(const char *challenge_id, const char *nonce_hex,
                                                  const char *verifier_id, const char *purpose,
                                                  long created_at_ms, long expires_at_ms) {
-    if (!challenge_id || !nonce_hex || !verifier_id || !purpose) {
+    if (!challenge_id || challenge_id[0] == '\0' || !nonce_hex || nonce_hex[0] == '\0' ||
+        !verifier_id || verifier_id[0] == '\0' || !purpose || purpose[0] == '\0') {
         return NULL;
     }
 

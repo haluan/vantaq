@@ -22,7 +22,7 @@ vantaq_create_challenge(struct vantaq_challenge_store *store, const char *verifi
     long now_ms;
     long expires_ms;
 
-    if (!store || !verifier_id || !purpose || !out_challenge) {
+    if (!store || !verifier_id || verifier_id[0] == '\0' || !purpose || !out_challenge) {
         return VANTAQ_CREATE_CHALLENGE_STATUS_ERROR_INTERNAL;
     }
 
