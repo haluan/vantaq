@@ -37,10 +37,13 @@ struct vantaq_http_health_context {
     size_t allowed_subnets_count;
     bool dev_allow_all_networks;
     struct vantaq_audit_log *audit_log;
+    struct vantaq_challenge_store *challenge_store;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
     void *io_ctx;
 };
+
+struct vantaq_challenge_store;
 
 struct vantaq_http_request_context {
     char peer_ipv4[16]; // INET_ADDRSTRLEN
@@ -57,5 +60,10 @@ int send_verifier_metadata_response(struct vantaq_http_connection *connection,
                                     const struct vantaq_http_health_context *ctx,
                                     const struct vantaq_http_request_context *req_ctx,
                                     const char *target_verifier_id);
+
+int send_post_challenge_response(struct vantaq_http_connection *connection,
+                                 const struct vantaq_http_health_context *ctx,
+                                 const struct vantaq_http_request_context *req_ctx,
+                                 const char *request_body);
 
 #endif

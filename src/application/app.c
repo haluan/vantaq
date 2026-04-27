@@ -5,6 +5,7 @@
 #include "domain/version.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/http_server.h"
+#include "infrastructure/memory/challenge_store_memory.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -123,13 +124,14 @@ collect_allowed_subnet_items(const struct vantaq_runtime_config *config, const c
 }
 
 int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
-    const char *config_path             = VANTAQ_DEFAULT_CONFIG_PATH;
-    bool config_path_set                = false;
-    const char *audit_log_path          = NULL;
-    bool audit_log_path_env_set         = false;
-    size_t audit_log_max_bytes          = 0;
-    bool audit_log_max_bytes_env_set    = false;
-    struct vantaq_config_loader *loader = NULL;
+    const char *config_path              = VANTAQ_DEFAULT_CONFIG_PATH;
+    bool config_path_set                 = false;
+    const char *audit_log_path           = NULL;
+    bool audit_log_path_env_set          = false;
+    size_t audit_log_max_bytes           = 0;
+    bool audit_log_max_bytes_env_set     = false;
+    struct vantaq_config_loader *loader  = NULL;
+    struct vantaq_challenge_store *store = NULL;
     int arg_idx;
     int exit_code = 0;
 
@@ -337,6 +339,13 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             (void)vantaq_write(io->write_out, io->ctx, "vantaqd startup\n");
         }
 
+        store = vantaq_challenge_store_memory_create(100, 10);
+        if (store == NULL) {
+            (void)vantaq_write(io->write_err, io->ctx, "failed to initialize challenge store\n");
+            exit_code = 70;
+            goto cleanup;
+        }
+
         server_options.cbSize                     = sizeof(server_options);
         server_options.runtime_config             = config;
         server_options.listen_host                = vantaq_runtime_service_listen_host(config);
@@ -369,6 +378,7 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         server_options.tls_trusted_client_ca_path =
             vantaq_runtime_tls_trusted_client_ca_path(config);
         server_options.tls_require_client_cert = vantaq_runtime_tls_require_client_cert(config);
+        server_options.challenge_store         = store;
         server_options.write_out               = io->write_out;
         server_options.write_err               = io->write_err;
         server_options.io_ctx                  = io->ctx;
@@ -389,6 +399,9 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
     }
 
 cleanup:
+    if (store != NULL) {
+        store->destroy(store);
+    }
     vantaq_config_loader_destroy(loader);
     return exit_code;
 }

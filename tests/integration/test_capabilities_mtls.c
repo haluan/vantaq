@@ -103,9 +103,40 @@ static void test_capabilities_requires_mtls(void **state) {
     s_assert_null(s, strstr(body, "\"supported_claims\""));
 }
 
+static void test_post_challenge_requires_mtls(void **state) {
+    struct CapabilitiesTestSuite *s = *state;
+    int status;
+    char body[1024];
+
+    int rc = request_status_and_body(
+        s->port, "POST /v1/attestation/challenge HTTP/1.1\r\nHost: localhost\r\n\r\n", &status,
+        body, sizeof(body));
+
+    s_assert_int_equal(s, rc, 0);
+    s_assert_int_equal(s, status, 401);
+    s_assert_non_null(s, strstr(body, "\"code\":\"MTLS_REQUIRED\""));
+}
+
+static void test_challenge_method_not_allowed(void **state) {
+    struct CapabilitiesTestSuite *s = *state;
+    int status;
+    char body[1024];
+
+    int rc = request_status_and_body(
+        s->port, "GET /v1/attestation/challenge HTTP/1.1\r\nHost: localhost\r\n\r\n", &status, body,
+        sizeof(body));
+
+    s_assert_int_equal(s, rc, 0);
+    s_assert_int_equal(s, status, 405);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_capabilities_requires_mtls, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_post_challenge_requires_mtls, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_challenge_method_not_allowed, suite_setup,
                                         suite_teardown),
     };
 

@@ -548,6 +548,16 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         return 405;
     }
 
+    if (strcmp(path, "/v1/attestation/challenge") == 0) {
+        if (strcmp(method, "POST") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 201;
+        }
+        return 405;
+    }
+
     return 404;
 }
 
@@ -686,9 +696,10 @@ static void handle_client(struct vantaq_http_connection *connection,
         goto cleanup;
     }
 
-    if (status_code == 200 &&
+    if ((status_code == 200 || status_code == 201) &&
         (strcmp(path, "/v1/health") == 0 || strcmp(path, "/v1/device/identity") == 0 ||
-         strcmp(path, "/v1/device/capabilities") == 0)) {
+         strcmp(path, "/v1/device/capabilities") == 0 ||
+         strcmp(path, "/v1/attestation/challenge") == 0)) {
         if (!vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
             if (send_mtls_required_response(connection) != 0) {
                 (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
@@ -726,7 +737,7 @@ static void handle_client(struct vantaq_http_connection *connection,
         }
     }
 
-    if (status_code == 200) {
+    if (status_code == 200 || status_code == 201) {
         int rc;
         if (strcmp(path, "/v1/device/identity") == 0) {
             rc = send_identity_response(connection, health_ctx);
@@ -734,6 +745,8 @@ static void handle_client(struct vantaq_http_connection *connection,
             rc = send_capabilities_response(connection, health_ctx);
         } else if (strncmp(path, "/v1/security/verifiers/", 23) == 0) {
             rc = send_verifier_metadata_response(connection, health_ctx, &request_ctx, path + 23);
+        } else if (status_code == 201 && strcmp(path, "/v1/attestation/challenge") == 0) {
+            rc = send_post_challenge_response(connection, health_ctx, &request_ctx, req_buf);
         } else {
             rc = send_health_response(connection, health_ctx);
         }
@@ -954,6 +967,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.allowed_subnets_count      = options->allowed_subnets_count;
     health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
     health_ctx.audit_log                  = audit_log;
+    health_ctx.challenge_store            = options->challenge_store;
     health_ctx.err_logger                 = options->write_err;
     health_ctx.io_ctx                     = options->io_ctx;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {

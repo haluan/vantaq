@@ -26,6 +26,8 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/attestation_challenge/challenge.c
   src/infrastructure/crypto/nonce_random.c
   src/infrastructure/memory/challenge_store_memory.c
+  src/application/attestation_challenge/create_challenge.c
+  src/infrastructure/http_server/routes_attestation.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
