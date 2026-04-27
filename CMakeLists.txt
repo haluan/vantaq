@@ -18,6 +18,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/config_loader/config_loader.c
   src/infrastructure/tls/tls_server.c
   src/infrastructure/http_server/http_server.c
+  src/infrastructure/tls/client_cert.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -80,6 +81,10 @@ if(VANTAQ_BUILD_TESTS)
   set_tests_properties(unit_app_startup_config PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
+
+  add_executable(test_client_cert_identity tests/unit/test_client_cert_identity.c)
+  target_link_libraries(test_client_cert_identity PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::SSL OpenSSL::Crypto)
+  add_test(NAME unit_client_cert_identity COMMAND test_client_cert_identity)
 
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
   target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})

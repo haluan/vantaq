@@ -214,6 +214,19 @@ bool vantaq_tls_connection_peer_cert_verified(const struct vantaq_tls_connection
     return verify_result == X509_V_OK;
 }
 
+void *vantaq_tls_connection_get_peer_certificate(const struct vantaq_tls_connection *connection) {
+    if (connection == NULL || connection->ssl == NULL) {
+        return NULL;
+    }
+    return (void *)SSL_get_peer_certificate(connection->ssl);
+}
+
+void vantaq_tls_connection_free_peer_certificate(void *cert) {
+    if (cert != NULL) {
+        X509_free((X509 *)cert);
+    }
+}
+
 void vantaq_tls_connection_destroy(struct vantaq_tls_connection *connection) {
     if (connection == NULL) {
         return;

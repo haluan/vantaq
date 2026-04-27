@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "domain/verifier_access/verifier_identity.h"
+
 enum vantaq_verifier_auth_status {
     VANTAQ_VERIFIER_AUTH_STATUS_UNAUTHENTICATED = 0,
     VANTAQ_VERIFIER_AUTH_STATUS_AUTHENTICATED,
@@ -15,6 +17,7 @@ enum vantaq_verifier_auth_status {
 struct vantaq_verifier_auth_context {
     size_t cbSize;
     enum vantaq_verifier_auth_status status;
+    struct vantaq_verifier_identity identity;
 };
 
 static inline bool

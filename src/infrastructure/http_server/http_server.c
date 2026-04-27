@@ -9,7 +9,9 @@
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
 #include "infrastructure/subnet_policy.h"
+#include "infrastructure/tls/client_cert.h"
 #include "infrastructure/tls_server.h"
+#include <openssl/x509.h>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -602,7 +604,13 @@ static void handle_client(struct vantaq_http_connection *connection,
     request_ctx.verifier_auth.cbSize = sizeof(request_ctx.verifier_auth);
     request_ctx.verifier_auth.status = VANTAQ_VERIFIER_AUTH_STATUS_UNAUTHENTICATED;
     if (vantaq_tls_connection_peer_cert_verified(connection->tls_connection)) {
+        void *peer_cert;
         request_ctx.verifier_auth.status = VANTAQ_VERIFIER_AUTH_STATUS_AUTHENTICATED;
+        peer_cert = vantaq_tls_connection_get_peer_certificate(connection->tls_connection);
+        if (peer_cert != NULL) {
+            (void)vantaq_tls_extract_verifier_id(peer_cert, &request_ctx.verifier_auth.identity);
+            vantaq_tls_connection_free_peer_certificate(peer_cert);
+        }
     }
 
     tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
