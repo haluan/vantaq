@@ -4,6 +4,7 @@
 #ifndef VANTAQ_DOMAIN_VERIFIER_ACCESS_VERIFIER_POLICY_H
 #define VANTAQ_DOMAIN_VERIFIER_ACCESS_VERIFIER_POLICY_H
 
+#include <stdbool.h>
 #include "domain/verifier_access/verifier_identity.h"
 
 enum vantaq_verifier_status_code {
@@ -22,5 +23,9 @@ enum vantaq_verifier_policy_decision {
 enum vantaq_verifier_policy_decision
 vantaq_verifier_policy_evaluate(const struct vantaq_verifier_identity *identity,
                                 enum vantaq_verifier_status_code status);
+
+bool vantaq_verifier_policy_can_read_metadata(const struct vantaq_verifier_identity *caller_identity,
+                                              const char *target_verifier_id,
+                                              bool caller_is_owner_admin);
 
 #endif

@@ -3,6 +3,7 @@
 
 #include "domain/verifier_access/verifier_policy.h"
 #include <stddef.h>
+#include <string.h>
 
 enum vantaq_verifier_policy_decision
 vantaq_verifier_policy_evaluate(const struct vantaq_verifier_identity *identity,
@@ -20,4 +21,22 @@ vantaq_verifier_policy_evaluate(const struct vantaq_verifier_identity *identity,
     default:
         return VANTAQ_VERIFIER_POLICY_REJECT_UNKNOWN;
     }
+}
+
+bool vantaq_verifier_policy_can_read_metadata(
+    const struct vantaq_verifier_identity *caller_identity, const char *target_verifier_id,
+    bool caller_is_owner_admin) {
+    if (caller_identity == NULL || target_verifier_id == NULL) {
+        return false;
+    }
+
+    if (caller_is_owner_admin) {
+        return true;
+    }
+
+    if (strcmp(caller_identity->id, target_verifier_id) == 0) {
+        return true;
+    }
+
+    return false;
 }

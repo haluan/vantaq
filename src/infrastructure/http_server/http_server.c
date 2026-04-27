@@ -49,45 +49,7 @@ static volatile int g_listener_fd             = -1;
 
 #define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
-struct vantaq_http_health_context {
-    const struct vantaq_runtime_config *runtime_config;
-    const char *service_name;
-    const char *service_version;
-    const char *device_id;
-    const char *device_model;
-    const char *device_serial_number;
-    const char *device_manufacturer;
-    const char *device_firmware_version;
-    const char *const *supported_claims;
-    size_t supported_claims_count;
-    const char *const *signature_algorithms;
-    size_t signature_algorithms_count;
-    const char *const *evidence_formats;
-    size_t evidence_formats_count;
-    const char *const *challenge_modes;
-    size_t challenge_modes_count;
-    const char *const *storage_modes;
-    size_t storage_modes_count;
-    const char *const *allowed_subnets;
-    size_t allowed_subnets_count;
-    bool dev_allow_all_networks;
-    struct vantaq_audit_log *audit_log;
-    struct timespec started_at;
-    vantaq_http_log_fn err_logger;
-    void *io_ctx;
-};
-
-struct vantaq_http_request_context {
-    char peer_ipv4[INET_ADDRSTRLEN];
-    bool peer_ip_ok;
-    enum vantaq_peer_address_status peer_status;
-    struct vantaq_verifier_auth_context verifier_auth;
-};
-
-struct vantaq_http_connection {
-    int fd;
-    struct vantaq_tls_connection *tls_connection;
-};
+#include "http_server_internal.h"
 
 static int log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
     if (logger != NULL && text != NULL) {
@@ -133,7 +95,7 @@ static ssize_t connection_write(struct vantaq_http_connection *connection, const
     return send(connection->fd, buf, len, 0);
 }
 
-static int write_all(struct vantaq_http_connection *connection, const char *buf, size_t len) {
+int vantaq_http_write_all(struct vantaq_http_connection *connection, const char *buf, size_t len) {
     size_t sent = 0;
 
     while (sent < len) {
@@ -150,7 +112,7 @@ static int write_all(struct vantaq_http_connection *connection, const char *buf,
     return 0;
 }
 
-static int send_status_response(struct vantaq_http_connection *connection, int status_code) {
+int vantaq_http_send_status_response(struct vantaq_http_connection *connection, int status_code) {
     const char *status_text = "Internal Server Error";
     char response[160];
     int n;
@@ -174,7 +136,7 @@ static int send_status_response(struct vantaq_http_connection *connection, int s
     if (n <= 0 || (size_t)n >= sizeof(response)) {
         return -1;
     }
-    return write_all(connection, response, (size_t)n);
+    return vantaq_http_write_all(connection, response, (size_t)n);
 }
 
 static int send_subnet_denied_response(struct vantaq_http_connection *connection,
@@ -208,7 +170,7 @@ static int send_subnet_denied_response(struct vantaq_http_connection *connection
         return -1;
     }
 
-    return write_all(connection, response, (size_t)n_resp);
+    return vantaq_http_write_all(connection, response, (size_t)n_resp);
 }
 
 static int send_mtls_required_response(struct vantaq_http_connection *connection) {
@@ -236,7 +198,7 @@ static int send_mtls_required_response(struct vantaq_http_connection *connection
         return -1;
     }
 
-    return write_all(connection, response, (size_t)n_resp);
+    return vantaq_http_write_all(connection, response, (size_t)n_resp);
 }
 
 static long long elapsed_seconds_since(const struct timespec *started_at) {
@@ -403,7 +365,7 @@ static int send_health_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    return write_all(connection, response, (size_t)response_n);
+    return vantaq_http_write_all(connection, response, (size_t)response_n);
 }
 
 static int send_identity_response(struct vantaq_http_connection *connection,
@@ -452,7 +414,7 @@ static int send_identity_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    return write_all(connection, response, (size_t)response_n);
+    return vantaq_http_write_all(connection, response, (size_t)response_n);
 }
 
 static int send_capabilities_response(struct vantaq_http_connection *connection,
@@ -508,12 +470,12 @@ static int send_capabilities_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    if (write_all(connection, response_header, (size_t)header_n) != 0) {
+    if (vantaq_http_write_all(connection, response_header, (size_t)header_n) != 0) {
         free(json);
         return -1;
     }
 
-    result = write_all(connection, json, (size_t)json_n);
+    result = vantaq_http_write_all(connection, json, (size_t)json_n);
     free(json);
     return result;
 }
@@ -567,6 +529,16 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
     }
 
     if (strcmp(path, "/v1/device/capabilities") == 0) {
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
+    }
+
+    if (strncmp(path, "/v1/security/verifiers/", 23) == 0) {
         if (strcmp(method, "GET") == 0) {
             if (is_protected != NULL) {
                 *is_protected = true;
@@ -652,7 +624,7 @@ static void handle_client(struct vantaq_http_connection *connection,
     }
 
     if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
-        (void)send_status_response(connection, 400);
+        (void)vantaq_http_send_status_response(connection, 400);
         goto cleanup;
     }
 
@@ -669,7 +641,7 @@ static void handle_client(struct vantaq_http_connection *connection,
         (void)snprintf(log_buf, sizeof(log_buf), "http server: subnet policy failed: %s\n",
                        vantaq_subnet_policy_status_text(subnet_status));
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
-        (void)send_status_response(connection, 500);
+        (void)vantaq_http_send_status_response(connection, 500);
         goto cleanup;
     }
 
@@ -721,7 +693,7 @@ static void handle_client(struct vantaq_http_connection *connection,
             if (send_mtls_required_response(connection) != 0) {
                 (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                                "http server: failed to send mtls-required response\n");
-                (void)send_status_response(connection, 500);
+                (void)vantaq_http_send_status_response(connection, 500);
             }
             goto cleanup;
         }
@@ -746,9 +718,9 @@ static void handle_client(struct vantaq_http_connection *connection,
                                reason);
                 (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
 
-                // For simplicity, we use send_status_response(403) or a more specific one if we
-                // want generic body. The task says "Keep error messages generic".
-                (void)send_status_response(connection, 403);
+                // For simplicity, we use vantaq_http_send_status_response(403) or a more specific
+                // one if we want generic body. The task says "Keep error messages generic".
+                (void)vantaq_http_send_status_response(connection, 403);
                 goto cleanup;
             }
         }
@@ -760,6 +732,8 @@ static void handle_client(struct vantaq_http_connection *connection,
             rc = send_identity_response(connection, health_ctx);
         } else if (strcmp(path, "/v1/device/capabilities") == 0) {
             rc = send_capabilities_response(connection, health_ctx);
+        } else if (strncmp(path, "/v1/security/verifiers/", 23) == 0) {
+            rc = send_verifier_metadata_response(connection, health_ctx, &request_ctx, path + 23);
         } else {
             rc = send_health_response(connection, health_ctx);
         }
@@ -767,12 +741,12 @@ static void handle_client(struct vantaq_http_connection *connection,
         if (rc != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                            "http server: failed to send response\n");
-            (void)send_status_response(connection, 500);
+            (void)vantaq_http_send_status_response(connection, 500);
         }
         goto cleanup;
     }
 
-    if (send_status_response(connection, status_code) != 0) {
+    if (vantaq_http_send_status_response(connection, status_code) != 0) {
         (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
                        "http server: failed to send status response\n");
     }

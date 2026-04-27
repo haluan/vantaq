@@ -21,6 +21,8 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/tls/client_cert.c
   src/domain/verifier_access/verifier_policy.c
   src/application/security/verifier_lookup.c
+  src/application/security/get_verifier_metadata.c
+  src/infrastructure/http_server/routes_verifiers.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
