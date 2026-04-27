@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
+#include "infrastructure/memory/zero_struct.h"
 #include "infrastructure/socket_peer.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
-
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -35,7 +35,7 @@ static void test_get_ipv4_from_tcp_socket_succeeds(void **state) {
     listener_fd = socket(AF_INET, SOCK_STREAM, 0);
     assert_true(listener_fd >= 0);
 
-    memset(&bind_addr, 0, sizeof(bind_addr));
+    VANTAQ_ZERO_STRUCT(bind_addr);
     bind_addr.sin_family      = AF_INET;
     bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     bind_addr.sin_port        = htons(0);
@@ -52,7 +52,7 @@ static void test_get_ipv4_from_tcp_socket_succeeds(void **state) {
     accepted_fd = accept(listener_fd, NULL, NULL);
     assert_true(accepted_fd >= 0);
 
-    memset(peer_ip, 0, sizeof(peer_ip));
+    VANTAQ_ZERO_STRUCT(peer_ip);
     assert_int_equal(vantaq_peer_address_get_ipv4(accepted_fd, peer_ip, sizeof(peer_ip)),
                      VANTAQ_PEER_ADDRESS_STATUS_OK);
     assert_string_equal(peer_ip, "127.0.0.1");
@@ -65,7 +65,7 @@ static void test_get_ipv4_from_tcp_socket_succeeds(void **state) {
 static void test_invalid_fd_returns_invalid_argument(void **state) {
     (void)state;
     char peer_ip[INET_ADDRSTRLEN];
-    memset(peer_ip, 0, sizeof(peer_ip));
+    VANTAQ_ZERO_STRUCT(peer_ip);
 
     assert_int_equal(vantaq_peer_address_get_ipv4(-1, peer_ip, sizeof(peer_ip)),
                      VANTAQ_PEER_ADDRESS_STATUS_INVALID_ARGUMENT);
@@ -77,7 +77,7 @@ static void test_non_ipv4_peer_returns_unsupported_family(void **state) {
     char peer_ip[INET_ADDRSTRLEN];
 
     assert_int_equal(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
-    memset(peer_ip, 0, sizeof(peer_ip));
+    VANTAQ_ZERO_STRUCT(peer_ip);
 
     assert_int_equal(vantaq_peer_address_get_ipv4(fds[0], peer_ip, sizeof(peer_ip)),
                      VANTAQ_PEER_ADDRESS_STATUS_UNSUPPORTED_FAMILY);

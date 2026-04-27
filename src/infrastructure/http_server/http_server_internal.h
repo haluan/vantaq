@@ -58,6 +58,8 @@ struct vantaq_http_request_context {
 int vantaq_http_send_status_response(struct vantaq_http_connection *connection, int status_code);
 int vantaq_http_write_all(struct vantaq_http_connection *connection, const char *buf, size_t len);
 
+int log_text(vantaq_http_log_fn logger, void *ctx, const char *text);
+
 int send_verifier_metadata_response(struct vantaq_http_connection *connection,
                                     const struct vantaq_http_health_context *ctx,
                                     const struct vantaq_http_request_context *req_ctx,

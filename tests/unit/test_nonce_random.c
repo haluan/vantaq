@@ -76,11 +76,15 @@ static void test_generate_nonce_invalid_args(void **state) {
     s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(NULL, 128, 16),
                        VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
 
-    // Too short nonce
-    s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, sizeof(s->hex), 7),
+    // Too short nonce (new minimum is 16)
+    s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, sizeof(s->hex), 15),
                        VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
 
-    // Buffer too small
+    // Too long nonce (new maximum is 64)
+    s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, sizeof(s->hex), 65),
+                       VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
+
+    // Buffer too small (must be at least nonce_bytes * 2 + 1)
     s_assert_int_equal(s, vantaq_crypto_generate_nonce_hex(s->hex, 32, 16),
                        VANTAQ_CRYPTO_ERROR_INVALID_ARGS);
 }

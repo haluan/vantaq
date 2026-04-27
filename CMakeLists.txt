@@ -28,6 +28,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/memory/challenge_store_memory.c
   src/application/attestation_challenge/create_challenge.c
   src/infrastructure/http_server/routes_attestation.c
+  src/infrastructure/http_server/json_utils.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -100,6 +101,10 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_verifier_policy PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_verifier_policy COMMAND test_verifier_policy)
 
+  add_executable(test_verifier_lookup tests/unit/test_verifier_lookup.c)
+  target_link_libraries(test_verifier_lookup PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_verifier_lookup COMMAND test_verifier_lookup)
+
   add_executable(test_challenge_domain tests/unit/test_challenge_domain.c)
   target_link_libraries(test_challenge_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_challenge_domain COMMAND test_challenge_domain)
@@ -117,7 +122,7 @@ if(VANTAQ_BUILD_TESTS)
   add_test(NAME unit_challenge_ttl_config COMMAND test_challenge_ttl_config)
 
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
-  target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})
+  target_link_libraries(test_cli_smoke PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_cli_smoke COMMAND test_cli_smoke)
   set_tests_properties(integration_cli_smoke PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -125,7 +130,7 @@ if(VANTAQ_BUILD_TESTS)
 
   add_executable(test_capabilities_mtls tests/integration/test_capabilities_mtls.c tests/integration/test_cli_smoke.c)
   target_compile_definitions(test_capabilities_mtls PRIVATE DISABLE_TEST_MAIN)
-  target_link_libraries(test_capabilities_mtls PRIVATE ${VANTAQ_CMOCKA_TARGET})
+  target_link_libraries(test_capabilities_mtls PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_capabilities_mtls COMMAND test_capabilities_mtls)
   set_tests_properties(integration_capabilities_mtls PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

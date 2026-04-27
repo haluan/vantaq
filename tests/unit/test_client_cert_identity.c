@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "infrastructure/tls/client_cert.h"
+#include "infrastructure/tls_server.h"
 
 // Suite Pattern: Struct to hold test state
 struct ClientCertTestSuite {
@@ -31,7 +32,12 @@ static int suite_setup(void **state) {
         return -1;
 
     s->pkey = EVP_PKEY_new();
-    EVP_PKEY_assign_RSA(s->pkey, RSA_generate_key(2048, RSA_F4, NULL, NULL));
+    // Modern EVP key generation for tests (avoids deprecated RSA_generate_key)
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY_keygen_init(ctx);
+    EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048);
+    EVP_PKEY_keygen(ctx, &s->pkey);
+    EVP_PKEY_CTX_free(ctx);
 
     *state = s;
     return 0;
@@ -89,11 +95,12 @@ static X509 *create_cert(EVP_PKEY *pkey, const char *cn, const char *uri_san, co
 static void test_extract_from_uri_san(void **state) {
     struct ClientCertTestSuite *s = *state;
     struct vantaq_verifier_identity identity;
+    const struct vantaq_tls_ops *ops = vantaq_tls_ops_default();
 
     s->cert = create_cert(s->pkey, "some-cn", "spiffe://vantaqd/verifier/verifier-001", NULL);
 
     enum vantaq_verifier_identity_status status =
-        vantaq_tls_extract_verifier_id(s->cert, &identity);
+        vantaq_tls_extract_verifier_id(ops, (struct x509_st *)s->cert, &identity);
     s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_OK);
     s_assert_string_equal(s, identity.id, "verifier-001");
 }
@@ -101,41 +108,44 @@ static void test_extract_from_uri_san(void **state) {
 static void test_extract_from_dns_san(void **state) {
     struct ClientCertTestSuite *s = *state;
     struct vantaq_verifier_identity identity;
+    const struct vantaq_tls_ops *ops = vantaq_tls_ops_default();
 
     s->cert = create_cert(s->pkey, "some-cn", NULL, "verifier-002.verifier.vantaqd.local");
 
     enum vantaq_verifier_identity_status status =
-        vantaq_tls_extract_verifier_id(s->cert, &identity);
+        vantaq_tls_extract_verifier_id(ops, (struct x509_st *)s->cert, &identity);
     s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_OK);
     s_assert_string_equal(s, identity.id, "verifier-002");
 }
 
-static void test_extract_from_cn_fallback(void **state) {
+static void test_cn_fallback_removal(void **state) {
     struct ClientCertTestSuite *s = *state;
     struct vantaq_verifier_identity identity;
+    const struct vantaq_tls_ops *ops = vantaq_tls_ops_default();
 
+    /* S-4, D-2: CN fallback should be removed. This cert has no SAN. */
     s->cert = create_cert(s->pkey, "verifier-003", NULL, NULL);
 
     enum vantaq_verifier_identity_status status =
-        vantaq_tls_extract_verifier_id(s->cert, &identity);
-    s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_OK);
-    s_assert_string_equal(s, identity.id, "verifier-003");
+        vantaq_tls_extract_verifier_id(ops, (struct x509_st *)s->cert, &identity);
+    s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_MISSING);
 }
 
-static void test_missing_identity(void **state) {
+static void test_injection_protection(void **state) {
     struct ClientCertTestSuite *s = *state;
     struct vantaq_verifier_identity identity;
+    const struct vantaq_tls_ops *ops = vantaq_tls_ops_default();
 
-    // CN that doesn't match a specific pattern (though currently any CN is accepted as fallback)
-    // Actually, the requirement says "Subject CN fallback". If it's there, it's used.
-    // To test missing, we'd need a cert with NO CN and NO SAN.
-
-    s->cert = X509_new();
-    X509_set_version(s->cert, 2);
-    // No subject name set
-
+    /* S-2, D-3: Path traversal / dots / slashes must be rejected */
+    s->cert = create_cert(s->pkey, "some-cn", "spiffe://vantaqd/verifier/../admin", NULL);
     enum vantaq_verifier_identity_status status =
-        vantaq_tls_extract_verifier_id(s->cert, &identity);
+        vantaq_tls_extract_verifier_id(ops, (struct x509_st *)s->cert, &identity);
+    s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_MISSING);
+
+    /* Characters outside [a-zA-Z0-9_-] must be rejected */
+    X509_free(s->cert);
+    s->cert = create_cert(s->pkey, "some-cn", "spiffe://vantaqd/verifier/foo$bar", NULL);
+    status  = vantaq_tls_extract_verifier_id(ops, (struct x509_st *)s->cert, &identity);
     s_assert_int_equal(s, status, VANTAQ_VERIFIER_IDENTITY_STATUS_MISSING);
 }
 
@@ -143,8 +153,8 @@ int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_extract_from_uri_san, suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_extract_from_dns_san, suite_setup, suite_teardown),
-        cmocka_unit_test_setup_teardown(test_extract_from_cn_fallback, suite_setup, suite_teardown),
-        cmocka_unit_test_setup_teardown(test_missing_identity, suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_cn_fallback_removal, suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_injection_protection, suite_setup, suite_teardown),
     };
 
     return cmocka_run_group_tests_name("client_cert_identity_suite", tests, NULL, NULL);

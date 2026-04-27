@@ -4,13 +4,12 @@
 #ifndef VANTAQ_APPLICATION_APP_H
 #define VANTAQ_APPLICATION_APP_H
 
-#include <stddef.h>
-
-typedef int (*vantaq_write_fn)(void *ctx, const char *data);
+#include "vantaq_types.h"
 
 struct vantaq_app_io {
-    vantaq_write_fn write_out;
-    vantaq_write_fn write_err;
+    size_t cbSize;
+    vantaq_io_write_fn write_out;
+    vantaq_io_write_fn write_err;
     void *ctx;
 };
 

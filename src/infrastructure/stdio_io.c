@@ -29,6 +29,7 @@ void vantaq_stdio_io_init(struct vantaq_app_io *io) {
     if (io == NULL) {
         return;
     }
+    io->cbSize    = sizeof(struct vantaq_app_io);
     io->write_out = vantaq_write_stdout;
     io->write_err = vantaq_write_stderr;
     io->ctx       = NULL;

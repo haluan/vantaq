@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "application/app.h"
+#include "infrastructure/memory/zero_struct.h"
 
 #include <setjmp.h>
 #include <stdarg.h>
@@ -46,7 +47,7 @@ static int capture_err(void *ctx, const char *data) {
 
 static int setup(void **state) {
     static test_io_buffer buffer;
-    memset(&buffer, 0, sizeof(buffer));
+    VANTAQ_ZERO_STRUCT(buffer);
     *state = &buffer;
     return 0;
 }
@@ -55,6 +56,7 @@ static void test_version_flag_prints_version(void **state) {
     test_io_buffer *buffer  = (test_io_buffer *)*state;
     char *argv[]            = {"vantaqd", "--version"};
     struct vantaq_app_io io = {
+        .cbSize    = sizeof(struct vantaq_app_io),
         .write_out = capture_out,
         .write_err = capture_err,
         .ctx       = buffer,
@@ -71,6 +73,7 @@ static void test_unknown_argument_returns_usage_error(void **state) {
     test_io_buffer *buffer  = (test_io_buffer *)*state;
     char *argv[]            = {"vantaqd", "--bad-flag"};
     struct vantaq_app_io io = {
+        .cbSize    = sizeof(struct vantaq_app_io),
         .write_out = capture_out,
         .write_err = capture_err,
         .ctx       = buffer,

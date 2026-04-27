@@ -108,7 +108,10 @@ static void test_startup_with_valid_config_succeeds(void **state) {
     child = fork();
     assert_true(child >= 0);
     if (child == 0) {
-        execl("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL);
+        char env_buf[512];
+        char *envp[] = {env_buf, NULL};
+        snprintf(env_buf, sizeof(env_buf), "VANTAQ_AUDIT_LOG_PATH=%s.audit", config_path);
+        execle("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL, envp);
         _exit(127);
     }
 
@@ -151,6 +154,7 @@ static void test_startup_with_invalid_config_fails(void **state) {
     char *argv[]            = {"vantaqd", "--config", config_path};
     test_io_buffer buffer   = {0};
     struct vantaq_app_io io = {
+        .cbSize    = sizeof(struct vantaq_app_io),
         .write_out = capture_out,
         .write_err = capture_err,
         .ctx       = &buffer,
@@ -170,6 +174,7 @@ static void test_startup_default_path_behavior_is_verified(void **state) {
     char *argv[]            = {"vantaqd"};
     test_io_buffer buffer   = {0};
     struct vantaq_app_io io = {
+        .cbSize    = sizeof(struct vantaq_app_io),
         .write_out = capture_out,
         .write_err = capture_err,
         .ctx       = &buffer,

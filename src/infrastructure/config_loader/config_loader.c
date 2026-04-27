@@ -17,7 +17,7 @@
 #define VANTAQ_MAX_PATH_LEN 256
 #define VANTAQ_MAX_ERROR_LEN 256
 
-#define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
+#include "infrastructure/memory/zero_struct.h"
 
 enum vantaq_section {
     VANTAQ_SECTION_NONE = 0,

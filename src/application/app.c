@@ -2,99 +2,82 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "application/app.h"
+
 #include "domain/version.h"
+#include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/http_server.h"
 #include "infrastructure/memory/challenge_store_memory.h"
 
+#include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define VANTAQ_USAGE "Usage: vantaqd [--version] [--config <path>]\n"
 #define VANTAQ_DEFAULT_AUDIT_LOG_PATH "/var/lib/vantaqd/audit.log"
-#define VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES (64U * 1024U)
+#define VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES (10U * 1024U * 1024U)
 
-static int vantaq_write(const vantaq_write_fn writer, void *ctx, const char *text) {
+/**
+ * Internal enumeration for list collection status.
+ */
+enum vantaq_app_list_status {
+    VANTAQ_APP_LIST_OK = 0,
+    VANTAQ_APP_LIST_OVERFLOW,
+    VANTAQ_APP_LIST_ERROR,
+};
+
+/**
+ * Internal application context used to group state during startup and refactor
+ * the monolithic run function (D-6). This also addresses D-3 by moving large
+ * pointer arrays off the stack and into a managed structure.
+ */
+struct vantaq_app_context {
+    const struct vantaq_app_io *io;
+    struct vantaq_config_loader *loader;
+    struct vantaq_challenge_store *store;
+    const char *config_path;
+    bool config_path_set;
+    const char *audit_log_path;
+    bool audit_log_path_env_set;
+    size_t audit_log_max_bytes;
+    bool audit_log_max_bytes_env_set;
+
+    /* Capability and access control lists */
+    const char *supported_claims[VANTAQ_MAX_LIST_ITEMS];
+    size_t supported_claims_count;
+    const char *signature_algorithms[VANTAQ_MAX_LIST_ITEMS];
+    size_t signature_algorithms_count;
+    const char *evidence_formats[VANTAQ_MAX_LIST_ITEMS];
+    size_t evidence_formats_count;
+    const char *challenge_modes[VANTAQ_MAX_LIST_ITEMS];
+    size_t challenge_modes_count;
+    const char *storage_modes[VANTAQ_MAX_LIST_ITEMS];
+    size_t storage_modes_count;
+    const char *allowed_subnets[VANTAQ_MAX_LIST_ITEMS];
+    size_t allowed_subnets_count;
+
+    int exit_code;
+};
+
+static int vantaq_write(const vantaq_io_write_fn writer, void *ctx, const char *text) {
     if (writer != NULL && text != NULL) {
         return writer(ctx, text);
     }
     return -1;
 }
 
-enum vantaq_list_status {
-    VANTAQ_LIST_STATUS_OK = 0,
-    VANTAQ_LIST_STATUS_INVALID_ARGUMENT,
-    VANTAQ_LIST_STATUS_CAPACITY_EXCEEDED,
-    VANTAQ_LIST_STATUS_ITEM_NOT_FOUND,
-};
-
-static const char *vantaq_list_status_text(enum vantaq_list_status status) {
-    switch (status) {
-    case VANTAQ_LIST_STATUS_OK:
-        return "ok";
-    case VANTAQ_LIST_STATUS_INVALID_ARGUMENT:
-        return "invalid argument";
-    case VANTAQ_LIST_STATUS_CAPACITY_EXCEEDED:
-        return "capacity exceeded";
-    case VANTAQ_LIST_STATUS_ITEM_NOT_FOUND:
-        return "item not found";
-    default:
-        return "unknown";
-    }
-}
-
-static const char *vantaq_capability_list_name(enum vantaq_capability_list list) {
-    switch (list) {
-    case VANTAQ_CAPABILITY_SUPPORTED_CLAIMS:
-        return "supported_claims";
-    case VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS:
-        return "signature_algorithms";
-    case VANTAQ_CAPABILITY_EVIDENCE_FORMATS:
-        return "evidence_formats";
-    case VANTAQ_CAPABILITY_CHALLENGE_MODES:
-        return "challenge_modes";
-    case VANTAQ_CAPABILITY_STORAGE_MODES:
-        return "storage_modes";
-    default:
-        return "unknown";
-    }
-}
-
-typedef const char *(*vantaq_item_accessor)(size_t index, void *ctx);
-
 struct collect_items_ctx {
     const struct vantaq_runtime_config *config;
     enum vantaq_capability_list capability_list;
 };
 
-static enum vantaq_list_status collect_items(const char **items, size_t items_capacity,
-                                             size_t *count_out, size_t count,
-                                             vantaq_item_accessor accessor, void *ctx) {
-    size_t i;
-
-    if (items == NULL || count_out == NULL || accessor == NULL) {
-        return VANTAQ_LIST_STATUS_INVALID_ARGUMENT;
-    }
-
-    if (count > items_capacity) {
-        return VANTAQ_LIST_STATUS_CAPACITY_EXCEEDED;
-    }
-
-    for (i = 0; i < count; i++) {
-        const char *item = accessor(i, ctx);
-        if (item == NULL) {
-            return VANTAQ_LIST_STATUS_ITEM_NOT_FOUND;
-        }
-        items[i] = item;
-    }
-
-    *count_out = count;
-    return VANTAQ_LIST_STATUS_OK;
-}
+typedef const char *(*vantaq_app_accessor_fn)(size_t index, void *ctx);
 
 static const char *capability_accessor(size_t index, void *ctx) {
     struct collect_items_ctx *c = (struct collect_items_ctx *)ctx;
@@ -106,305 +89,400 @@ static const char *subnet_accessor(size_t index, void *ctx) {
     return vantaq_runtime_allowed_subnet_item(c->config, index);
 }
 
-static enum vantaq_list_status collect_capability_items(const struct vantaq_runtime_config *config,
-                                                        enum vantaq_capability_list list,
-                                                        const char **items, size_t items_capacity,
-                                                        size_t *count_out) {
-    struct collect_items_ctx ctx = {config, list};
-    size_t count                 = vantaq_runtime_capability_count(config, list);
-    return collect_items(items, items_capacity, count_out, count, capability_accessor, &ctx);
+static enum vantaq_app_list_status collect_items(const char **items, size_t items_capacity,
+                                                 size_t *count_out, size_t count,
+                                                 vantaq_app_accessor_fn accessor, void *ctx) {
+    size_t i;
+    if (count > items_capacity) {
+        return VANTAQ_APP_LIST_OVERFLOW;
+    }
+    for (i = 0; i < count; i++) {
+        items[i] = accessor(i, ctx);
+        if (items[i] == NULL) {
+            return VANTAQ_APP_LIST_ERROR;
+        }
+    }
+    *count_out = count;
+    return VANTAQ_APP_LIST_OK;
 }
 
-static enum vantaq_list_status
+static enum vantaq_app_list_status
+collect_capability_items(const struct vantaq_runtime_config *config,
+                         enum vantaq_capability_list list_type, const char **items,
+                         size_t max_items, size_t *count_out) {
+    struct collect_items_ctx ctx = {config, list_type};
+    size_t count                 = vantaq_runtime_capability_count(config, list_type);
+    return collect_items(items, max_items, count_out, count, capability_accessor, &ctx);
+}
+
+static enum vantaq_app_list_status
 collect_allowed_subnet_items(const struct vantaq_runtime_config *config, const char **items,
                              size_t items_capacity, size_t *count_out) {
-    struct collect_items_ctx ctx = {config, 0};
+    struct collect_items_ctx ctx = {config, (enum vantaq_capability_list)0};
     size_t count                 = vantaq_runtime_allowed_subnet_count(config);
     return collect_items(items, items_capacity, count_out, count, subnet_accessor, &ctx);
 }
 
-int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
-    const char *config_path              = VANTAQ_DEFAULT_CONFIG_PATH;
-    bool config_path_set                 = false;
-    const char *audit_log_path           = NULL;
-    bool audit_log_path_env_set          = false;
-    size_t audit_log_max_bytes           = 0;
-    bool audit_log_max_bytes_env_set     = false;
-    struct vantaq_config_loader *loader  = NULL;
-    struct vantaq_challenge_store *store = NULL;
+/**
+ * Parses CLI arguments. Addresses E-1, E-2, and E-4.
+ */
+static bool vantaq_app_parse_cli(struct vantaq_app_context *ctx, int argc, char **argv) {
     int arg_idx;
-    int exit_code = 0;
-
-    if (io == NULL) {
-        return 70;
-    }
 
     for (arg_idx = 1; arg_idx < argc; arg_idx++) {
+        if (argv[arg_idx] == NULL) {
+            continue;
+        }
+
         if (strcmp(argv[arg_idx], "--version") == 0) {
             char output[64];
             const char *version = vantaq_domain_version();
             int n               = snprintf(output, sizeof(output), "vantaqd %s\n", version);
 
             if (n <= 0 || (size_t)n >= sizeof(output)) {
-                (void)vantaq_write(io->write_err, io->ctx, "failed to render version\n");
-                exit_code = 70;
-                goto cleanup;
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, "failed to render version\n");
+                ctx->exit_code = 70;
+                return false;
             }
 
-            (void)vantaq_write(io->write_out, io->ctx, output);
-            exit_code = 0;
-            goto cleanup;
+            (void)vantaq_write(ctx->io->write_out, ctx->io->ctx, output);
+            ctx->exit_code = 0;
+            return false;
         }
 
         if (strcmp(argv[arg_idx], "--config") == 0) {
-            if (config_path_set) {
-                (void)vantaq_write(io->write_err, io->ctx, "error: duplicate --config flag\n");
-                exit_code = 64;
-                goto cleanup;
+            if (ctx->config_path_set) {
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                                   "error: duplicate --config flag\n");
+                ctx->exit_code = 64;
+                return false;
             }
             if (arg_idx + 1 >= argc) {
-                (void)vantaq_write(io->write_err, io->ctx, VANTAQ_USAGE);
-                exit_code = 64;
-                goto cleanup;
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, VANTAQ_USAGE);
+                ctx->exit_code = 64;
+                return false;
             }
-            config_path     = argv[++arg_idx];
-            config_path_set = true;
+            ctx->config_path = argv[++arg_idx];
+            {
+                struct stat st;
+                if (stat(ctx->config_path, &st) != 0) {
+                    (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                                       "error: config file not found\n");
+                    ctx->exit_code = 78;
+                    return false;
+                }
+                if (!S_ISREG(st.st_mode)) {
+                    (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                                       "error: config path is not a regular file\n");
+                    ctx->exit_code = 78;
+                    return false;
+                }
+            }
+            ctx->config_path_set = true;
             continue;
         }
 
-        (void)vantaq_write(io->write_err, io->ctx, VANTAQ_USAGE);
-        exit_code = 64;
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, VANTAQ_USAGE);
+        ctx->exit_code = 64;
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Resolves audit log configuration from environment and config file.
+ * Addresses S-1, S-2, S-4, C-2, and E-3.
+ */
+static bool vantaq_app_resolve_audit(struct vantaq_app_context *ctx) {
+    const char *env_path;
+    const char *env_max_bytes;
+    int n;
+
+    /* Handle Path */
+    env_path = getenv("VANTAQ_AUDIT_LOG_PATH");
+    if (env_path != NULL && env_path[0] != '\0') {
+        if (strlen(env_path) >= PATH_MAX) {
+            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                               "error: VANTAQ_AUDIT_LOG_PATH exceeds maximum path length\n");
+            ctx->exit_code = 64;
+            return false;
+        }
+        ctx->audit_log_path = strdup(env_path);
+        if (ctx->audit_log_path == NULL) {
+            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                               "error: out of memory for audit path\n");
+            ctx->exit_code = 70;
+            return false;
+        }
+        ctx->audit_log_path_env_set = true;
+
+        /* Sanitize for warning message (S-2, E-3) */
+        {
+            char warning[1024];
+            char sanitized[PATH_MAX];
+            size_t j, k = 0;
+            for (j = 0; env_path[j] != '\0' && k < sizeof(sanitized) - 1; j++) {
+                unsigned char c = (unsigned char)env_path[j];
+                sanitized[k++]  = (c >= 32 && c <= 126) ? (char)c : '?';
+            }
+            sanitized[k] = '\0';
+            n            = snprintf(warning, sizeof(warning),
+                                    "SECURITY WARNING: Audit log path redirected by environment "
+                                    "variable: %s\n",
+                                    sanitized);
+            if (n > 0 && (size_t)n < sizeof(warning)) {
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, warning);
+            }
+        }
+    }
+
+    /* Handle Max Bytes */
+    env_max_bytes = getenv("VANTAQ_AUDIT_LOG_MAX_BYTES");
+    if (env_max_bytes != NULL && env_max_bytes[0] != '\0') {
+        char *end;
+        unsigned long long val;
+        errno = 0;
+        val   = strtoull(env_max_bytes, &end, 10);
+        if (errno == ERANGE || *end != '\0' || val == 0 || val > 1024ULL * 1024 * 1024 * 1024) {
+            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                               "error: invalid VANTAQ_AUDIT_LOG_MAX_BYTES (must be positive "
+                               "integer <= 1TB)\n");
+            ctx->exit_code = 64;
+            return false;
+        }
+        ctx->audit_log_max_bytes         = (size_t)val;
+        ctx->audit_log_max_bytes_env_set = true;
+
+        {
+            char msg[256];
+            n = snprintf(msg, sizeof(msg),
+                         "SECURITY WARNING: Audit log max size redirected by environment "
+                         "variable: %llu\n",
+                         val);
+            if (n > 0 && (size_t)n < sizeof(msg)) {
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, msg);
+            }
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Loads configuration and populates capabilities. Addresses E-5, D-3.
+ */
+static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
+    enum vantaq_config_status status;
+    const struct vantaq_runtime_config *config;
+    char output[512];
+    int n;
+
+    ctx->loader = vantaq_config_loader_create();
+    if (ctx->loader == NULL) {
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, "config load failed: out of memory\n");
+        ctx->exit_code = 70;
+        return false;
+    }
+
+    status = vantaq_config_loader_load(ctx->loader, ctx->config_path);
+    if (status != VANTAQ_CONFIG_STATUS_OK) {
+        const char *err = vantaq_config_loader_last_error(ctx->loader);
+        n               = snprintf(output, sizeof(output), "config load failed: %s\n",
+                                   err != NULL ? err : "unknown error");
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                           (n > 0 && (size_t)n < sizeof(output)) ? output : "config load failed\n");
+        ctx->exit_code = 78;
+        return false;
+    }
+
+    config = vantaq_config_loader_config(ctx->loader);
+
+    /* Finalize Audit Config */
+    if (!ctx->audit_log_max_bytes_env_set) {
+        size_t config_max_bytes = vantaq_runtime_audit_log_max_bytes(config);
+        ctx->audit_log_max_bytes =
+            (config_max_bytes > 0) ? config_max_bytes : VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES;
+    }
+
+    if (!ctx->audit_log_path_env_set) {
+        const char *config_path_val = vantaq_runtime_audit_log_path(config);
+        if (config_path_val != NULL && config_path_val[0] != '\0') {
+            if (strlen(config_path_val) >= PATH_MAX) {
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                                   "error: audit.path exceeds maximum path length\n");
+                ctx->exit_code = 78;
+                return false;
+            }
+            ctx->audit_log_path = config_path_val;
+        } else {
+            ctx->audit_log_path = VANTAQ_DEFAULT_AUDIT_LOG_PATH;
+        }
+    }
+
+    /* Collect capabilities */
+    {
+        struct {
+            enum vantaq_capability_list list;
+            const char **items;
+            size_t *count;
+        } lists[] = {
+            {VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, ctx->supported_claims,
+             &ctx->supported_claims_count},
+            {VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS, ctx->signature_algorithms,
+             &ctx->signature_algorithms_count},
+            {VANTAQ_CAPABILITY_EVIDENCE_FORMATS, ctx->evidence_formats,
+             &ctx->evidence_formats_count},
+            {VANTAQ_CAPABILITY_CHALLENGE_MODES, ctx->challenge_modes, &ctx->challenge_modes_count},
+            {VANTAQ_CAPABILITY_STORAGE_MODES, ctx->storage_modes, &ctx->storage_modes_count},
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(lists) / sizeof(lists[0]); i++) {
+            enum vantaq_app_list_status cap_status = collect_capability_items(
+                config, lists[i].list, lists[i].items, VANTAQ_MAX_LIST_ITEMS, lists[i].count);
+            if (cap_status != VANTAQ_APP_LIST_OK) {
+                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                                   "config load failed: invalid capabilities data\n");
+                ctx->exit_code = 78;
+                return false;
+            }
+        }
+    }
+
+    /* Collect subnets */
+    if (collect_allowed_subnet_items(config, ctx->allowed_subnets, VANTAQ_MAX_LIST_ITEMS,
+                                     &ctx->allowed_subnets_count) != VANTAQ_APP_LIST_OK) {
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                           "config load failed: invalid network access data\n");
+        ctx->exit_code = 78;
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Main application entry point. Orchestrates the startup sequence.
+ */
+int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
+    struct vantaq_app_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.io          = io;
+    ctx.config_path = VANTAQ_DEFAULT_CONFIG_PATH;
+
+    if (io == NULL || io->cbSize != sizeof(struct vantaq_app_io)) {
+        return 70;
+    }
+
+    (void)signal(SIGPIPE, SIG_IGN);
+
+    if (argc > 0 && argv == NULL) {
+        (void)vantaq_write(io->write_err, io->ctx, "error: argc > 0 but argv is NULL\n");
+        return 64;
+    }
+
+    if (!vantaq_app_parse_cli(&ctx, argc, argv)) {
+        goto cleanup;
+    }
+
+    if (!vantaq_app_resolve_audit(&ctx)) {
+        goto cleanup;
+    }
+
+    if (!vantaq_app_load_and_collect(&ctx)) {
         goto cleanup;
     }
 
     {
-        enum vantaq_config_status status;
-        const struct vantaq_runtime_config *config;
-        struct vantaq_http_server_options server_options = {0};
-        enum vantaq_http_server_status server_status;
-        char output[512];
-        const char *supported_claims[VANTAQ_MAX_LIST_ITEMS]     = {0};
-        const char *signature_algorithms[VANTAQ_MAX_LIST_ITEMS] = {0};
-        const char *evidence_formats[VANTAQ_MAX_LIST_ITEMS]     = {0};
-        const char *challenge_modes[VANTAQ_MAX_LIST_ITEMS]      = {0};
-        const char *storage_modes[VANTAQ_MAX_LIST_ITEMS]        = {0};
-        const char *allowed_subnets[VANTAQ_MAX_LIST_ITEMS]      = {0};
-        size_t supported_claims_count                           = 0;
-        size_t signature_algorithms_count                       = 0;
-        size_t evidence_formats_count                           = 0;
-        size_t challenge_modes_count                            = 0;
-        size_t storage_modes_count                              = 0;
-        size_t allowed_subnets_count                            = 0;
+        const struct vantaq_runtime_config *config = vantaq_config_loader_config(ctx.loader);
+        struct vantaq_http_server_options server_options;
+        char startup_msg[256];
         int n;
 
-        audit_log_path = getenv("VANTAQ_AUDIT_LOG_PATH");
-        if (audit_log_path != NULL && audit_log_path[0] != '\0') {
-            if (strlen(audit_log_path) >= PATH_MAX) {
-                (void)vantaq_write(io->write_err, io->ctx,
-                                   "error: VANTAQ_AUDIT_LOG_PATH exceeds maximum path length\n");
-                exit_code = 64;
-                goto cleanup;
-            }
-            audit_log_path_env_set = true;
-            (void)vantaq_write(
-                io->write_err, io->ctx,
-                "SECURITY WARNING: Audit log path redirected by environment variable: ");
-            (void)vantaq_write(io->write_err, io->ctx, audit_log_path);
-            (void)vantaq_write(io->write_err, io->ctx, "\n");
-        }
-
-        const char *max_bytes_env = getenv("VANTAQ_AUDIT_LOG_MAX_BYTES");
-        if (max_bytes_env != NULL && max_bytes_env[0] != '\0') {
-            long long val = atoll(max_bytes_env);
-            if (val > 0) {
-                audit_log_max_bytes         = (size_t)val;
-                audit_log_max_bytes_env_set = true;
-                (void)vantaq_write(io->write_err, io->ctx,
-                                   "SECURITY WARNING: Audit log max size redirected by environment "
-                                   "variable: ");
-                (void)vantaq_write(io->write_err, io->ctx, max_bytes_env);
-                (void)vantaq_write(io->write_err, io->ctx, "\n");
-            }
-        }
-
-        loader = vantaq_config_loader_create();
-        if (loader == NULL) {
-            (void)vantaq_write(io->write_err, io->ctx, "config load failed: out of memory\n");
-            exit_code = 70;
-            goto cleanup;
-        }
-
-        status = vantaq_config_loader_load(loader, config_path);
-        if (status != VANTAQ_CONFIG_STATUS_OK) {
-            const char *err = vantaq_config_loader_last_error(loader);
-            n               = snprintf(output, sizeof(output), "config load failed: %s\n",
-                                       err != NULL ? err : "unknown error");
-            if (n > 0 && (size_t)n < sizeof(output)) {
-                (void)vantaq_write(io->write_err, io->ctx, output);
-            } else {
-                (void)vantaq_write(io->write_err, io->ctx, "config load failed\n");
-            }
-            exit_code = 78;
-            goto cleanup;
-        }
-
-        config = vantaq_config_loader_config(loader);
-        if (!audit_log_max_bytes_env_set) {
-            size_t config_max_bytes = vantaq_runtime_audit_log_max_bytes(config);
-            if (config_max_bytes > 0) {
-                audit_log_max_bytes = config_max_bytes;
-            } else {
-                audit_log_max_bytes = VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES;
-            }
-        }
-
-        if (!audit_log_path_env_set) {
-            const char *config_path_val = vantaq_runtime_audit_log_path(config);
-            if (config_path_val != NULL && config_path_val[0] != '\0') {
-                if (strlen(config_path_val) >= PATH_MAX) {
-                    (void)vantaq_write(io->write_err, io->ctx,
-                                       "error: audit.path exceeds maximum path length\n");
-                    exit_code = 78;
-                    goto cleanup;
-                }
-                audit_log_path = config_path_val;
-            } else {
-                audit_log_path = VANTAQ_DEFAULT_AUDIT_LOG_PATH;
-            }
-        }
-        {
-            struct {
-                enum vantaq_capability_list list;
-                const char **items;
-                size_t *count;
-            } lists[] = {
-                {VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, supported_claims, &supported_claims_count},
-                {VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS, signature_algorithms,
-                 &signature_algorithms_count},
-                {VANTAQ_CAPABILITY_EVIDENCE_FORMATS, evidence_formats, &evidence_formats_count},
-                {VANTAQ_CAPABILITY_CHALLENGE_MODES, challenge_modes, &challenge_modes_count},
-                {VANTAQ_CAPABILITY_STORAGE_MODES, storage_modes, &storage_modes_count},
-            };
-            size_t list_idx;
-            enum vantaq_list_status cap_status;
-
-            for (list_idx = 0; list_idx < sizeof(lists) / sizeof(lists[0]); list_idx++) {
-                cap_status =
-                    collect_capability_items(config, lists[list_idx].list, lists[list_idx].items,
-                                             VANTAQ_MAX_LIST_ITEMS, lists[list_idx].count);
-                if (cap_status != VANTAQ_LIST_STATUS_OK) {
-                    n = snprintf(output, sizeof(output),
-                                 "config load failed: list '%s' error: %s\n",
-                                 vantaq_capability_list_name(lists[list_idx].list),
-                                 vantaq_list_status_text(cap_status));
-                    if (n > 0 && (size_t)n < sizeof(output)) {
-                        (void)vantaq_write(io->write_err, io->ctx, output);
-                    } else {
-                        (void)vantaq_write(io->write_err, io->ctx,
-                                           "config load failed: invalid capabilities data\n");
-                    }
-                    exit_code = 78;
-                    goto cleanup;
-                }
-            }
-        }
-
-        {
-            enum vantaq_list_status subnet_status;
-
-            subnet_status = collect_allowed_subnet_items(
-                config, allowed_subnets, VANTAQ_MAX_LIST_ITEMS, &allowed_subnets_count);
-            if (subnet_status != VANTAQ_LIST_STATUS_OK) {
-                n = snprintf(output, sizeof(output),
-                             "config load failed: list 'network_access.allowed_subnets' error: "
-                             "%s\n",
-                             vantaq_list_status_text(subnet_status));
-                if (n > 0 && (size_t)n < sizeof(output)) {
-                    (void)vantaq_write(io->write_err, io->ctx, output);
-                } else {
-                    (void)vantaq_write(io->write_err, io->ctx,
-                                       "config load failed: invalid network access data\n");
-                }
-                exit_code = 78;
-                goto cleanup;
-            }
-        }
-
-        n = snprintf(output, sizeof(output), "vantaqd startup on %s:%d\n",
-                     vantaq_runtime_service_listen_host(config),
-                     vantaq_runtime_service_listen_port(config));
-        if (n > 0 && (size_t)n < sizeof(output)) {
-            (void)vantaq_write(io->write_out, io->ctx, output);
-        } else {
-            (void)vantaq_write(io->write_out, io->ctx, "vantaqd startup\n");
-        }
-
-        store =
-            vantaq_challenge_store_memory_create(vantaq_runtime_challenge_max_global(config),
-                                                 vantaq_runtime_challenge_max_per_verifier(config));
-        if (store == NULL) {
-            (void)vantaq_write(io->write_err, io->ctx, "failed to initialize challenge store\n");
-            exit_code = 70;
-            goto cleanup;
-        }
-
+        memset(&server_options, 0, sizeof(server_options));
         server_options.cbSize                     = sizeof(server_options);
         server_options.runtime_config             = config;
         server_options.listen_host                = vantaq_runtime_service_listen_host(config);
         server_options.listen_port                = vantaq_runtime_service_listen_port(config);
         server_options.service_name               = "vantaqd";
-        server_options.service_version            = vantaq_runtime_service_version(config);
+        server_options.service_version            = vantaq_domain_version();
         server_options.device_id                  = vantaq_runtime_device_id(config);
         server_options.device_model               = vantaq_runtime_device_model(config);
         server_options.device_serial_number       = vantaq_runtime_device_serial_number(config);
         server_options.device_manufacturer        = vantaq_runtime_device_manufacturer(config);
         server_options.device_firmware_version    = vantaq_runtime_device_firmware_version(config);
-        server_options.supported_claims           = supported_claims;
-        server_options.supported_claims_count     = supported_claims_count;
-        server_options.signature_algorithms       = signature_algorithms;
-        server_options.signature_algorithms_count = signature_algorithms_count;
-        server_options.evidence_formats           = evidence_formats;
-        server_options.evidence_formats_count     = evidence_formats_count;
-        server_options.challenge_modes            = challenge_modes;
-        server_options.challenge_modes_count      = challenge_modes_count;
-        server_options.storage_modes              = storage_modes;
-        server_options.storage_modes_count        = storage_modes_count;
-        server_options.allowed_subnets            = allowed_subnets;
-        server_options.allowed_subnets_count      = allowed_subnets_count;
+        server_options.supported_claims           = ctx.supported_claims;
+        server_options.supported_claims_count     = ctx.supported_claims_count;
+        server_options.signature_algorithms       = ctx.signature_algorithms;
+        server_options.signature_algorithms_count = ctx.signature_algorithms_count;
+        server_options.evidence_formats           = ctx.evidence_formats;
+        server_options.evidence_formats_count     = ctx.evidence_formats_count;
+        server_options.challenge_modes            = ctx.challenge_modes;
+        server_options.challenge_modes_count      = ctx.challenge_modes_count;
+        server_options.storage_modes              = ctx.storage_modes;
+        server_options.storage_modes_count        = ctx.storage_modes_count;
+        server_options.allowed_subnets            = ctx.allowed_subnets;
+        server_options.allowed_subnets_count      = ctx.allowed_subnets_count;
         server_options.dev_allow_all_networks     = vantaq_runtime_dev_allow_all_networks(config);
-        server_options.audit_log_path             = audit_log_path;
-        server_options.audit_log_max_bytes        = audit_log_max_bytes;
+        server_options.audit_log_path             = ctx.audit_log_path;
+        server_options.audit_log_max_bytes        = ctx.audit_log_max_bytes;
         server_options.tls_enabled                = vantaq_runtime_tls_enabled(config);
         server_options.tls_server_cert_path       = vantaq_runtime_tls_server_cert_path(config);
         server_options.tls_server_key_path        = vantaq_runtime_tls_server_key_path(config);
         server_options.tls_trusted_client_ca_path =
             vantaq_runtime_tls_trusted_client_ca_path(config);
         server_options.tls_require_client_cert = vantaq_runtime_tls_require_client_cert(config);
-        server_options.challenge_store         = store;
-        server_options.challenge_ttl_seconds   = vantaq_runtime_challenge_ttl_seconds(config);
-        server_options.write_out               = io->write_out;
-        server_options.write_err               = io->write_err;
-        server_options.io_ctx                  = io->ctx;
 
-        server_status = vantaq_http_server_run(&server_options);
-        if (server_status != VANTAQ_HTTP_SERVER_STATUS_OK) {
-            const char *err = vantaq_http_server_status_text(server_status);
-            n               = snprintf(output, sizeof(output), "http server failed: %s\n",
-                                       err != NULL ? err : "unknown error");
-            if (n > 0 && (size_t)n < sizeof(output)) {
-                (void)vantaq_write(io->write_err, io->ctx, output);
-            } else {
-                (void)vantaq_write(io->write_err, io->ctx, "http server failed\n");
-            }
-            exit_code = 78;
+        if (!server_options.tls_enabled) {
+            (void)vantaq_write(io->write_err, io->ctx,
+                               "SECURITY WARNING: mTLS is DISABLED. Server is operating in "
+                               "INSECURE mode.\n");
+        }
+
+        ctx.store =
+            vantaq_challenge_store_memory_create(vantaq_runtime_challenge_max_global(config),
+                                                 vantaq_runtime_challenge_max_per_verifier(config));
+        if (ctx.store == NULL) {
+            (void)vantaq_write(io->write_err, io->ctx,
+                               "startup failed: failed to create challenge store\n");
+            ctx.exit_code = 70;
             goto cleanup;
+        }
+
+        server_options.challenge_store       = ctx.store;
+        server_options.challenge_ttl_seconds = vantaq_runtime_challenge_ttl_seconds(config);
+        server_options.write_out             = io->write_out;
+        server_options.write_err             = io->write_err;
+        server_options.io_ctx                = io->ctx;
+
+        n = snprintf(startup_msg, sizeof(startup_msg), "vantaqd startup on %s:%d\n",
+                     server_options.listen_host, server_options.listen_port);
+        if (n > 0 && (size_t)n < sizeof(startup_msg)) {
+            (void)vantaq_write(io->write_out, io->ctx, startup_msg);
+        }
+
+        /*
+         * Execution enters the synchronous HTTP server loop. This function only
+         * returns after the server has joined all worker threads and closed its
+         * listener, ensuring that all pointers into the app context remain valid
+         * throughout the server's lifetime (C-1).
+         */
+        if (vantaq_http_server_run(&server_options) != VANTAQ_HTTP_SERVER_STATUS_OK) {
+            (void)vantaq_write(io->write_err, io->ctx, "http server failed: runtime error\n");
+            ctx.exit_code = 71;
         }
     }
 
 cleanup:
-    if (store != NULL) {
-        store->destroy(store);
+    if (ctx.audit_log_path_env_set) {
+        free((void *)ctx.audit_log_path);
     }
-    vantaq_config_loader_destroy(loader);
-    return exit_code;
+    if (ctx.store != NULL) {
+        vantaq_challenge_store_destroy(ctx.store);
+    }
+    if (ctx.loader != NULL) {
+        vantaq_config_loader_destroy(ctx.loader);
+    }
+    return ctx.exit_code;
 }

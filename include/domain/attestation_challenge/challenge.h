@@ -45,9 +45,10 @@ bool vantaq_challenge_is_expired(const struct vantaq_challenge *challenge, long 
 bool vantaq_challenge_is_used(const struct vantaq_challenge *challenge);
 
 /**
- * @brief Mark the challenge as used.
+ * @brief Mark the challenge as used (atomic operation).
+ * @return true if successfully marked as used, false if it was already used.
  */
-void vantaq_challenge_mark_used(struct vantaq_challenge *challenge);
+bool vantaq_challenge_mark_used(struct vantaq_challenge *challenge);
 
 /**
  * @brief Getters for challenge fields (since struct is opaque).
@@ -56,6 +57,7 @@ const char *vantaq_challenge_get_id(const struct vantaq_challenge *challenge);
 const char *vantaq_challenge_get_nonce_hex(const struct vantaq_challenge *challenge);
 const char *vantaq_challenge_get_verifier_id(const struct vantaq_challenge *challenge);
 const char *vantaq_challenge_get_purpose(const struct vantaq_challenge *challenge);
+long vantaq_challenge_get_created_at_ms(const struct vantaq_challenge *challenge);
 long vantaq_challenge_get_expires_at_ms(const struct vantaq_challenge *challenge);
 
 #endif

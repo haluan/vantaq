@@ -4,20 +4,33 @@
 #include "application/attestation_challenge/create_challenge.h"
 #include "http_server_internal.h"
 #include "infrastructure/audit_log.h"
+#include "infrastructure/memory/zero_struct.h"
+#include "json_utils.h"
+
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+/* Static assertion to ensure buffer is large enough for all fields at maximum length + JSON
+ * overhead */
+#define EXPECTED_MAX_JSON                                                                          \
+    (VANTAQ_CHALLENGE_ID_MAX + VANTAQ_NONCE_HEX_MAX + VANTAQ_VERIFIER_ID_MAX +                     \
+     VANTAQ_PURPOSE_MAX + 128)
+#define VANTAQ_CHALLENGE_JSON_BUF_SIZE 1024
+static_assert(VANTAQ_CHALLENGE_JSON_BUF_SIZE > EXPECTED_MAX_JSON,
+              "JSON buffer too small for maximum field sizes");
+
 static void audit_challenge_creation(const struct vantaq_http_health_context *ctx,
                                      const struct vantaq_http_request_context *req_ctx,
                                      const char *result, const char *reason) {
     struct vantaq_audit_event event;
-    if (!ctx->audit_log) {
+    if (!ctx || !req_ctx || !ctx->audit_log) {
         return;
     }
 
-    memset(&event, 0, sizeof(event));
+    VANTAQ_ZERO_STRUCT(event);
     event.cbSize                 = sizeof(event);
     event.time_utc_epoch_seconds = time(NULL);
     event.source_ip              = req_ctx->peer_ipv4;
@@ -28,26 +41,32 @@ static void audit_challenge_creation(const struct vantaq_http_health_context *ct
     event.verifier_id            = req_ctx->verifier_auth.identity.id;
     event.request_id             = req_ctx->request_id;
 
-    vantaq_audit_log_append(ctx->audit_log, &event);
+    /* S-5: Log failures to stderr if audit log write fails */
+    if (vantaq_audit_log_append(ctx->audit_log, &event) != VANTAQ_AUDIT_LOG_STATUS_OK) {
+        fprintf(stderr, "VANTAQ: Failed to write audit event for challenge creation (%s: %s)\n",
+                result, reason);
+    }
 }
-
-#define VANTAQ_CHALLENGE_JSON_BUF_SIZE 1024
 
 int send_post_challenge_response(struct vantaq_http_connection *connection,
                                  const struct vantaq_http_health_context *ctx,
                                  const struct vantaq_http_request_context *req_ctx,
                                  const char *request_body) {
+    /* Robust NULL guards for all inputs */
+    if (!connection || !ctx || !req_ctx || !request_body)
+        return -1;
+
     struct vantaq_challenge *challenge = NULL;
     enum vantaq_create_challenge_status status;
     char json[VANTAQ_CHALLENGE_JSON_BUF_SIZE];
     char response[VANTAQ_CHALLENGE_JSON_BUF_SIZE + 256];
-    char purpose[64] = "remote_attestation";
-    long ttl         = (long)ctx->challenge_ttl_seconds;
+    char purpose[VANTAQ_PURPOSE_MAX];
+    long ttl = (long)ctx->challenge_ttl_seconds;
     int n;
     const char *body_start;
-    const char *ttl_pos;
+    int result = -1;
 
-    // Basic body parsing (skipping headers)
+    /* Skip HTTP headers to reach JSON body */
     body_start = strstr(request_body, "\r\n\r\n");
     if (body_start) {
         body_start += 4;
@@ -55,69 +74,106 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
         body_start = request_body;
     }
 
-    // Check purpose (simplified for MVP)
-    if (strstr(body_start, "\"purpose\"") == NULL) {
+    /* Use robust JSON extraction instead of strstr */
+    if (!vantaq_json_extract_str(body_start, "purpose", purpose, sizeof(purpose))) {
         audit_challenge_creation(ctx, req_ctx, "denied", "missing_purpose");
         return vantaq_http_send_status_response(connection, 400);
     }
 
-    // Do not accept verifier_id from request body (prevent spoofing)
-    if (strstr(body_start, "\"verifier_id\"") != NULL) {
+    /* Prevent spoofing of verifier_id from request body */
+    char spoofed_id[16];
+    if (vantaq_json_extract_str(body_start, "verifier_id", spoofed_id, sizeof(spoofed_id))) {
         audit_challenge_creation(ctx, req_ctx, "denied", "spoofed_verifier_id");
         return vantaq_http_send_status_response(connection, 400);
     }
 
-    // Parse requested_ttl_seconds if present
-    ttl_pos = strstr(body_start, "\"requested_ttl_seconds\"");
-    if (ttl_pos != NULL) {
-        long requested_ttl = 0;
-        const char *val    = strchr(ttl_pos, ':');
-        if (val != NULL) {
-            requested_ttl = atol(val + 1);
-            if (requested_ttl <= 0) {
-                audit_challenge_creation(ctx, req_ctx, "denied", "invalid_ttl");
-                return vantaq_http_send_status_response(connection, 400);
-            }
-            if (requested_ttl < ttl) {
-                ttl = requested_ttl;
-            }
+    /* Safe TTL parsing with strtol-based helper */
+    long requested_ttl;
+    if (vantaq_json_extract_long(body_start, "requested_ttl_seconds", &requested_ttl)) {
+        if (requested_ttl <= 0) {
+            audit_challenge_creation(ctx, req_ctx, "denied", "invalid_ttl");
+            return vantaq_http_send_status_response(connection, 400);
+        }
+        if (requested_ttl < ttl) {
+            ttl = requested_ttl;
         }
     }
 
-    // Call application service
+    /* Call application service */
     status = vantaq_create_challenge(ctx->challenge_store, req_ctx->verifier_auth.identity.id,
                                      purpose, ttl, &challenge);
     if (status != VANTAQ_CREATE_CHALLENGE_STATUS_OK) {
-        audit_challenge_creation(ctx, req_ctx, "denied", "internal_error");
-        return vantaq_http_send_status_response(connection, 500);
+        const char *reason = "internal_error";
+        int http_status    = 500;
+
+        if (status == VANTAQ_CREATE_CHALLENGE_STATUS_ERROR_INVALID_ARGS) {
+            reason      = "invalid_arguments";
+            http_status = 400;
+        } else if (status == VANTAQ_CREATE_CHALLENGE_STATUS_ERROR_STORE_QUOTA) {
+            reason      = "verifier_quota_exceeded";
+            http_status = 429;
+        } else if (status == VANTAQ_CREATE_CHALLENGE_STATUS_ERROR_STORE_FULL) {
+            reason      = "system_capacity_exceeded";
+            http_status = 503;
+        }
+
+        audit_challenge_creation(ctx, req_ctx, "denied", reason);
+        return vantaq_http_send_status_response(connection, http_status);
     }
 
-    audit_challenge_creation(ctx, req_ctx, "allowed", "ok");
+    /* JSON escape all string fields in the response */
+    char esc_id[VANTAQ_CHALLENGE_ID_MAX * 2];
+    char esc_nonce[VANTAQ_NONCE_HEX_MAX * 2];
+    char esc_v_id[VANTAQ_VERIFIER_ID_MAX * 2];
+    char esc_purpose[VANTAQ_PURPOSE_MAX * 2];
 
-    // Construct response JSON
+    if (vantaq_json_escape_str(vantaq_challenge_get_id(challenge), esc_id, sizeof(esc_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_challenge_get_nonce_hex(challenge), esc_nonce,
+                               sizeof(esc_nonce)) == 0 ||
+        vantaq_json_escape_str(vantaq_challenge_get_verifier_id(challenge), esc_v_id,
+                               sizeof(esc_v_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_challenge_get_purpose(challenge), esc_purpose,
+                               sizeof(esc_purpose)) == 0) {
+        goto cleanup;
+    }
+
     n = snprintf(json, sizeof(json),
-                 "{\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"verifier_id\":\"%s\",\"purpose\":\"%"
-                 "s\",\"expires_in_seconds\":%ld}\n",
-                 vantaq_challenge_get_id(challenge), vantaq_challenge_get_nonce_hex(challenge),
-                 vantaq_challenge_get_verifier_id(challenge),
-                 vantaq_challenge_get_purpose(challenge), ttl);
+                 "{\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"verifier_id\":\"%s\","
+                 "\"purpose\":\"%s\",\"expires_in_seconds\":%ld}\n",
+                 esc_id, esc_nonce, esc_v_id, esc_purpose, ttl);
 
+    /* Handle truncation and resource cleanup */
     if (n < 0 || (size_t)n >= sizeof(json)) {
-        return -1;
+        goto cleanup;
     }
 
+    /* Correct Content-Length formatting with %zu */
     n = snprintf(response, sizeof(response),
                  "HTTP/1.1 201 Created\r\n"
                  "Content-Type: application/json\r\n"
-                 "Content-Length: %d\r\n"
+                 "Content-Length: %zu\r\n"
                  "Connection: close\r\n"
                  "\r\n"
                  "%s",
-                 n, json);
+                 (size_t)n, json);
 
     if (n < 0 || (size_t)n >= sizeof(response)) {
-        return -1;
+        goto cleanup;
     }
 
-    return vantaq_http_write_all(connection, response, (size_t)strlen(response));
+    /* Only log "allowed" once we know the response is fully constructed and ready to send */
+    audit_challenge_creation(ctx, req_ctx, "allowed", "ok");
+    result = vantaq_http_write_all(connection, response, (size_t)strlen(response));
+
+cleanup:
+    /* Ensure challenge domain object is freed if we didn't successfully send it */
+    /* Note: if result == 0 (success), the challenge is in the store and valid.
+       Actually, vantaq_create_challenge already put it in the store.
+       If snprintf failed, we should probably remove it from the store to avoid leaking slots (S-4).
+     */
+    if (result != 0 && challenge != NULL) {
+        vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
+        /* The above destroy the challenge internally in the store implementation I wrote. */
+    }
+    return result;
 }

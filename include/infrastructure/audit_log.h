@@ -33,9 +33,6 @@ enum vantaq_audit_log_status vantaq_audit_log_create(const char *path, size_t ma
                                                      struct vantaq_audit_log **out_log);
 void vantaq_audit_log_destroy(struct vantaq_audit_log *log);
 
-enum vantaq_audit_log_status vantaq_audit_log_serialize_event(const struct vantaq_audit_event *event,
-                                                              char *out_line,
-                                                              size_t out_line_size);
 enum vantaq_audit_log_status vantaq_audit_log_append(struct vantaq_audit_log *log,
                                                      const struct vantaq_audit_event *event);
 

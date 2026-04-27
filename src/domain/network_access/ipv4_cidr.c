@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "domain/network_access/ipv4_cidr.h"
+#include "infrastructure/memory/zero_struct.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <string.h>
-
-#define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
 struct vantaq_ipv4_cidr {
     uint32_t network;

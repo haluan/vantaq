@@ -20,6 +20,7 @@
 struct CapabilitiesTestSuite {
     int port;
     char cfg_path[256];
+    char audit_path[256];
     pid_t child_pid;
 };
 
@@ -34,6 +35,7 @@ struct CapabilitiesTestSuite {
 extern int reserve_ephemeral_port(void);
 extern int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow_all,
                            char *path_out, size_t path_out_size);
+extern int make_temp_audit_path(char *path_out, size_t path_out_size);
 extern int wait_for_server_ready(int port, int timeout_ms);
 extern int request_status_and_body(int port, const char *request, int *status_out, char *body_out,
                                    size_t body_out_size);
@@ -54,6 +56,12 @@ static int suite_setup(void **state) {
         return -1;
     }
 
+    if (make_temp_audit_path(s->audit_path, sizeof(s->audit_path)) != 0) {
+        unlink(s->cfg_path);
+        free(s);
+        return -1;
+    }
+
     s->child_pid = fork();
     if (s->child_pid < 0) {
         free(s);
@@ -61,6 +69,9 @@ static int suite_setup(void **state) {
     }
 
     if (s->child_pid == 0) {
+        if (setenv("VANTAQ_AUDIT_LOG_PATH", s->audit_path, 1) != 0) {
+            _exit(126);
+        }
         execl("./bin/vantaqd", "vantaqd", "--config", s->cfg_path, (char *)NULL);
         _exit(127);
     }
@@ -83,6 +94,7 @@ static int suite_teardown(void **state) {
         kill(s->child_pid, SIGTERM);
         waitpid(s->child_pid, NULL, 0);
         unlink(s->cfg_path);
+        unlink(s->audit_path);
         free(s);
     }
     return 0;

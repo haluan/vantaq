@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
+#include "infrastructure/memory/zero_struct.h"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
-
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -32,7 +33,7 @@ static int first_available_port(void) {
             continue;
         }
 
-        memset(&addr, 0, sizeof(addr));
+        VANTAQ_ZERO_STRUCT(addr);
         addr.sin_family      = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port        = htons((uint16_t)port);
@@ -58,7 +59,7 @@ int reserve_ephemeral_port(void) {
         return -1;
     }
 
-    memset(&addr, 0, sizeof(addr));
+    VANTAQ_ZERO_STRUCT(addr);
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(0);
@@ -161,7 +162,7 @@ int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow
     return 0;
 }
 
-static int make_temp_audit_path(char *path_out, size_t path_out_size) {
+int make_temp_audit_path(char *path_out, size_t path_out_size) {
     char template[] = "/tmp/vantaq_audit_it_XXXXXX.log";
     int fd          = mkstemps(template, 4);
 
@@ -211,7 +212,7 @@ int wait_for_server_ready(int port, int timeout_ms) {
             return -1;
         }
 
-        memset(&addr, 0, sizeof(addr));
+        VANTAQ_ZERO_STRUCT(addr);
         addr.sin_family = AF_INET;
         addr.sin_port   = htons((uint16_t)port);
         if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
@@ -243,7 +244,7 @@ static int request_status_code(int port, const char *request) {
         return -1;
     }
 
-    memset(&addr, 0, sizeof(addr));
+    VANTAQ_ZERO_STRUCT(addr);
     addr.sin_family = AF_INET;
     addr.sin_port   = htons((uint16_t)port);
     if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
@@ -294,7 +295,7 @@ int request_status_and_body(int port, const char *request, int *status_out, char
         return -1;
     }
 
-    memset(&addr, 0, sizeof(addr));
+    VANTAQ_ZERO_STRUCT(addr);
     addr.sin_family = AF_INET;
     addr.sin_port   = htons((uint16_t)port);
     if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
@@ -340,8 +341,9 @@ int request_status_and_body(int port, const char *request, int *status_out, char
 
 static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **state) {
     (void)state;
-    int port           = reserve_ephemeral_port();
-    char cfg_path[256] = {0};
+    int port             = reserve_ephemeral_port();
+    char cfg_path[256]   = {0};
+    char audit_path[256] = {0};
     pid_t child;
     int status;
     int health_status;
@@ -355,11 +357,15 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
         return;
     }
     assert_int_equal(write_temp_yaml(port, "127.0.0.1/32", "false", cfg_path, sizeof(cfg_path)), 0);
+    assert_int_equal(make_temp_audit_path(audit_path, sizeof(audit_path)), 0);
 
     child = fork();
     assert_true(child >= 0);
 
     if (child == 0) {
+        if (setenv("VANTAQ_AUDIT_LOG_PATH", audit_path, 1) != 0) {
+            _exit(126);
+        }
         execl("./bin/vantaqd", "vantaqd", "--config", cfg_path, (char *)NULL);
         _exit(127);
     }
@@ -369,6 +375,7 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
         (void)kill(child, SIGTERM);
         (void)waitpid(child, &child_status, 0);
         unlink(cfg_path);
+        unlink(audit_path);
         return;
     }
 
@@ -427,6 +434,7 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
     assert_int_equal(WEXITSTATUS(status), 0);
 
     unlink(cfg_path);
+    unlink(audit_path);
 }
 
 static void test_health_denied_for_disallowed_subnet(void **state) {

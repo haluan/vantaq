@@ -41,7 +41,9 @@ static void set_error(struct vantaq_audit_log *log, const char *fmt, ...) {
     va_end(args);
 }
 
-static int appendf(char *buf, size_t buf_size, size_t *used, const char *fmt, ...) {
+/* Add format attribute for compiler checking */
+__attribute__((format(printf, 4, 5))) static int appendf(char *buf, size_t buf_size, size_t *used,
+                                                         const char *fmt, ...) {
     va_list args;
     int n;
 
@@ -131,7 +133,8 @@ static enum vantaq_audit_log_status validate_event(const struct vantaq_audit_eve
     }
 
     now = time(NULL);
-    if (event->time_utc_epoch_seconds > now + 300) {
+    /* Reject events more than 24 hours in the past to prevent arbitrary backdating */
+    if (event->time_utc_epoch_seconds < now - 86400 || event->time_utc_epoch_seconds > now + 300) {
         return VANTAQ_AUDIT_LOG_STATUS_INVALID_ARGUMENT;
     }
 
@@ -176,10 +179,24 @@ enum vantaq_audit_log_status vantaq_audit_log_create(const char *path, size_t ma
         return VANTAQ_AUDIT_LOG_STATUS_OUT_OF_MEMORY;
     }
     memcpy(log->path, path, len + 1);
+
+    /* Validate path at creation time to catch permission/existence issues early */
+    {
+        /* S-4: Use 0600 for audit log files */
+        int fd = open(log->path, O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            free(log->path);
+            free(log);
+            return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        }
+        (void)close(fd);
+    }
+
     if (pthread_mutex_init(&log->mutex, NULL) != 0) {
         free(log->path);
         free(log);
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+        /* C-4: Correct status code for system resource failure */
+        return VANTAQ_AUDIT_LOG_STATUS_OUT_OF_MEMORY;
     }
 
     log->max_bytes     = max_bytes;
@@ -194,12 +211,15 @@ void vantaq_audit_log_destroy(struct vantaq_audit_log *log) {
         return;
     }
 
+    /* Caller must ensure no concurrent appends are in progress */
     (void)pthread_mutex_destroy(&log->mutex);
     free(log->path);
     log->path = NULL;
     free(log);
 }
 
+/* Make serialization private (from public header) to enforce synchronization via append API.
+   We keep it non-static so that unit tests can still link to it for direct verification. */
 enum vantaq_audit_log_status
 vantaq_audit_log_serialize_event(const struct vantaq_audit_event *event, char *out_line,
                                  size_t out_line_size) {
@@ -257,28 +277,30 @@ enum vantaq_audit_log_status vantaq_audit_log_append(struct vantaq_audit_log *lo
         return VANTAQ_AUDIT_LOG_STATUS_INVALID_ARGUMENT;
     }
 
+    /* Move serialization and all state mutation inside the mutex */
+    if (pthread_mutex_lock(&log->mutex) != 0) {
+        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+    }
+
     status = vantaq_audit_log_serialize_event(event, line, sizeof(line));
     if (status != VANTAQ_AUDIT_LOG_STATUS_OK) {
         set_error(log, "failed to serialize audit event");
-        return status;
+        goto unlock_only;
     }
     line_len = strlen(line);
 
     if (line_len > log->max_bytes) {
         set_error(log, "event size %zu exceeds max_bytes %zu", line_len, log->max_bytes);
-        return VANTAQ_AUDIT_LOG_STATUS_FORMAT_ERROR;
+        status = VANTAQ_AUDIT_LOG_STATUS_FORMAT_ERROR;
+        goto unlock_only;
     }
 
-    if (pthread_mutex_lock(&log->mutex) != 0) {
-        set_error(log, "failed to lock mutex");
-        return VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
-    }
-
-    fd = open(log->path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0644);
+    /* Use 0600 (owner only) for audit log security */
+    fd = open(log->path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) {
         set_error(log, "open failed for %s: %s", log->path, strerror(errno));
         status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
-        goto cleanup;
+        goto unlock_only;
     }
 
     if (fstat(fd, &st) != 0) {
@@ -294,19 +316,33 @@ enum vantaq_audit_log_status vantaq_audit_log_append(struct vantaq_audit_log *lo
     }
 
     if (st.st_size < 0 || (size_t)st.st_size > log->max_bytes - line_len) {
-        char bak_path[VANTAQ_AUDIT_MAX_LINE_LEN]; // Reuse max line len for path buffer safety
+        char bak_path[VANTAQ_AUDIT_MAX_LINE_LEN];
+        int n;
 
         (void)close(fd);
         fd = -1;
 
-        (void)snprintf(bak_path, sizeof(bak_path), "%s.bak", log->path);
-        (void)rename(log->path, bak_path);
+        n = snprintf(bak_path, sizeof(bak_path), "%s.bak", log->path);
+        if (n < 0 || (size_t)n >= sizeof(bak_path)) {
+            /* E-3: Guard against truncated backup path */
+            set_error(log, "backup path too long");
+            status = VANTAQ_AUDIT_LOG_STATUS_FORMAT_ERROR;
+            goto unlock_only;
+        }
 
-        fd = open(log->path, O_CREAT | O_RDWR | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+        /* Check rename return value to prevent data loss on O_TRUNC */
+        if (rename(log->path, bak_path) != 0) {
+            set_error(log, "rotation failed (rename): %s", strerror(errno));
+            status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
+            goto unlock_only;
+        }
+
+        /* Re-open with O_EXCL to ensure atomic restoration window */
+        fd = open(log->path, O_CREAT | O_RDWR | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd < 0) {
             set_error(log, "open failed after rotate for %s: %s", log->path, strerror(errno));
             status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
-            goto cleanup;
+            goto unlock_only;
         }
     } else if (lseek(fd, 0, SEEK_END) < 0) {
         set_error(log, "seek failed for %s: %s", log->path, strerror(errno));
@@ -327,15 +363,27 @@ cleanup:
             status = VANTAQ_AUDIT_LOG_STATUS_IO_ERROR;
         }
     }
+unlock_only:
     (void)pthread_mutex_unlock(&log->mutex);
     return status;
 }
 
 const char *vantaq_audit_log_last_error(const struct vantaq_audit_log *log) {
+    static _Thread_local char error_buffer[VANTAQ_AUDIT_MAX_ERROR_LEN];
+
     if (log == NULL) {
         return NULL;
     }
-    return log->last_error;
+
+    /* Synchronized read from shared mutable error state */
+    if (pthread_mutex_lock((pthread_mutex_t *)&log->mutex) != 0) {
+        return "failed to lock mutex for error retrieval";
+    }
+    strncpy(error_buffer, log->last_error, sizeof(error_buffer));
+    error_buffer[sizeof(error_buffer) - 1] = '\0';
+    (void)pthread_mutex_unlock((pthread_mutex_t *)&log->mutex);
+
+    return error_buffer;
 }
 
 const char *vantaq_audit_log_status_text(enum vantaq_audit_log_status status) {
