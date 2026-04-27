@@ -19,6 +19,8 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/tls/tls_server.c
   src/infrastructure/http_server/http_server.c
   src/infrastructure/tls/client_cert.c
+  src/domain/verifier_access/verifier_policy.c
+  src/application/security/verifier_lookup.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -85,6 +87,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_client_cert_identity tests/unit/test_client_cert_identity.c)
   target_link_libraries(test_client_cert_identity PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::SSL OpenSSL::Crypto)
   add_test(NAME unit_client_cert_identity COMMAND test_client_cert_identity)
+
+  add_executable(test_verifier_policy tests/unit/test_verifier_policy.c)
+  target_link_libraries(test_verifier_policy PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_verifier_policy COMMAND test_verifier_policy)
 
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
   target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})

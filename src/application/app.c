@@ -342,6 +342,7 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         }
 
         server_options.cbSize                     = sizeof(server_options);
+        server_options.runtime_config             = config;
         server_options.listen_host                = vantaq_runtime_service_listen_host(config);
         server_options.listen_port                = vantaq_runtime_service_listen_port(config);
         server_options.service_name               = "vantaqd";

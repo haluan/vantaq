@@ -18,8 +18,11 @@ enum vantaq_http_server_status {
     VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR,
 };
 
+#include "infrastructure/config_loader.h"
+
 struct vantaq_http_server_options {
     size_t cbSize;
+    const struct vantaq_runtime_config *runtime_config;
     const char *listen_host;
     int listen_port;
     const char *service_name;

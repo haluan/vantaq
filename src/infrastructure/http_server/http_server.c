@@ -5,6 +5,8 @@
 
 #include "infrastructure/http_server.h"
 #include "application/security/verifier_context.h"
+#include "application/security/verifier_lookup.h"
+#include "domain/verifier_access/verifier_policy.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/socket_peer.h"
@@ -48,6 +50,7 @@ static volatile int g_listener_fd             = -1;
 #define VANTAQ_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
 struct vantaq_http_health_context {
+    const struct vantaq_runtime_config *runtime_config;
     const char *service_name;
     const char *service_version;
     const char *device_id;
@@ -713,14 +716,42 @@ static void handle_client(struct vantaq_http_connection *connection,
 
     if (status_code == 200 &&
         (strcmp(path, "/v1/health") == 0 || strcmp(path, "/v1/device/identity") == 0 ||
-         strcmp(path, "/v1/device/capabilities") == 0) &&
-        !vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
-        if (send_mtls_required_response(connection) != 0) {
-            (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
-                           "http server: failed to send mtls-required response\n");
-            (void)send_status_response(connection, 500);
+         strcmp(path, "/v1/device/capabilities") == 0)) {
+        if (!vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
+            if (send_mtls_required_response(connection) != 0) {
+                (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,
+                               "http server: failed to send mtls-required response\n");
+                (void)send_status_response(connection, 500);
+            }
+            goto cleanup;
         }
-        goto cleanup;
+
+        // Enforce verifier allowlist
+        {
+            enum vantaq_verifier_status_code v_status = vantaq_verifier_lookup_status(
+                health_ctx->runtime_config, request_ctx.verifier_auth.identity.id);
+            enum vantaq_verifier_policy_decision decision =
+                vantaq_verifier_policy_evaluate(&request_ctx.verifier_auth.identity, v_status);
+
+            if (decision != VANTAQ_VERIFIER_POLICY_ALLOW) {
+                const char *reason = "VERIFIER_NOT_ALLOWED";
+                if (decision == VANTAQ_VERIFIER_POLICY_REJECT_INACTIVE) {
+                    reason = "VERIFIER_INACTIVE";
+                } else if (decision == VANTAQ_VERIFIER_POLICY_REJECT_MISSING_ID) {
+                    reason = "VERIFIER_ID_MISSING";
+                }
+
+                (void)snprintf(log_buf, sizeof(log_buf),
+                               "http server: verifier denied %s %s reason=%s\n", method, path,
+                               reason);
+                (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
+
+                // For simplicity, we use send_status_response(403) or a more specific one if we
+                // want generic body. The task says "Keep error messages generic".
+                (void)send_status_response(connection, 403);
+                goto cleanup;
+            }
+        }
     }
 
     if (status_code == 200) {
@@ -927,6 +958,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
 
     g_stop_requested                      = 0;
     g_listener_fd                         = listener;
+    health_ctx.runtime_config             = options->runtime_config;
     health_ctx.service_name               = options->service_name;
     health_ctx.service_version            = options->service_version;
     health_ctx.device_id                  = options->device_id;
