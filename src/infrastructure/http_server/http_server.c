@@ -562,8 +562,13 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
     }
 
     if (strcmp(path, "/v1/device/capabilities") == 0) {
-        // Capabilities is public metadata, not protected by default
-        return (strcmp(method, "GET") == 0) ? 200 : 405;
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
     }
 
     return 404;
@@ -699,7 +704,8 @@ static void handle_client(struct vantaq_http_connection *connection,
     }
 
     if (status_code == 200 &&
-        (strcmp(path, "/v1/health") == 0 || strcmp(path, "/v1/device/identity") == 0) &&
+        (strcmp(path, "/v1/health") == 0 || strcmp(path, "/v1/device/identity") == 0 ||
+         strcmp(path, "/v1/device/capabilities") == 0) &&
         !vantaq_verifier_auth_is_authenticated(&request_ctx.verifier_auth)) {
         if (send_mtls_required_response(connection) != 0) {
             (void)log_text(health_ctx->err_logger, health_ctx->io_ctx,

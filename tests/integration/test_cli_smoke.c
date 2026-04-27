@@ -49,7 +49,7 @@ static int first_available_port(void) {
     return -1;
 }
 
-static int reserve_ephemeral_port(void) {
+int reserve_ephemeral_port(void) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -81,8 +81,8 @@ static int reserve_ephemeral_port(void) {
     return first_available_port();
 }
 
-static int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow_all,
-                           char *path_out, size_t path_out_size) {
+int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow_all,
+                    char *path_out, size_t path_out_size) {
     const char *yaml_fmt = "server:\n"
                            "  listen_address: 127.0.0.1\n"
                            "  listen_port: %d\n"
@@ -198,7 +198,7 @@ static int read_text_file(const char *path, char *out, size_t out_size) {
     return 0;
 }
 
-static int wait_for_server_ready(int port, int timeout_ms) {
+int wait_for_server_ready(int port, int timeout_ms) {
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
     int attempts          = timeout_ms / 50;
     int i;
@@ -275,8 +275,8 @@ static int request_status_code(int port, const char *request) {
     return status;
 }
 
-static int request_status_and_body(int port, const char *request, int *status_out, char *body_out,
-                                   size_t body_out_size) {
+int request_status_and_body(int port, const char *request, int *status_out, char *body_out,
+                            size_t body_out_size) {
     int sock;
     struct sockaddr_in addr;
     char response[1024];
@@ -414,12 +414,12 @@ static void test_server_bootstrap_health_404_405_and_graceful_shutdown(void **st
                          port, "GET /v1/device/capabilities HTTP/1.1\r\nHost: localhost\r\n\r\n",
                          &capabilities_status, capabilities_body, sizeof(capabilities_body)),
                      0);
-    assert_int_equal(capabilities_status, 200);
-    assert_non_null(strstr(capabilities_body, "\"supported_claims\":[\"device_identity\"]"));
-    assert_non_null(strstr(capabilities_body, "\"signature_algorithms\":[]"));
-    assert_non_null(strstr(capabilities_body, "\"evidence_formats\":[]"));
-    assert_non_null(strstr(capabilities_body, "\"challenge_modes\":[]"));
-    assert_non_null(strstr(capabilities_body, "\"storage_modes\":[]"));
+    assert_int_equal(capabilities_status, 401);
+    assert_non_null(strstr(capabilities_body, "\"error\""));
+    assert_non_null(strstr(capabilities_body, "\"code\":\"MTLS_REQUIRED\""));
+    assert_non_null(strstr(capabilities_body,
+                           "\"message\":\"Valid verifier client certificate is required.\""));
+    assert_null(strstr(capabilities_body, "\"supported_claims\":"));
 
     assert_int_equal(kill(child, SIGTERM), 0);
     assert_int_equal(waitpid(child, &status, 0), child);
@@ -525,6 +525,7 @@ static void test_health_denied_for_disallowed_subnet(void **state) {
     unlink(audit_path);
 }
 
+#ifndef DISABLE_TEST_MAIN
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_server_bootstrap_health_404_405_and_graceful_shutdown),
@@ -533,3 +534,4 @@ int main(void) {
 
     return cmocka_run_group_tests_name("integration_http_bootstrap", tests, NULL, NULL);
 }
+#endif

@@ -87,4 +87,12 @@ if(VANTAQ_BUILD_TESTS)
   set_tests_properties(integration_cli_smoke PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
+
+  add_executable(test_capabilities_mtls tests/integration/test_capabilities_mtls.c tests/integration/test_cli_smoke.c)
+  target_compile_definitions(test_capabilities_mtls PRIVATE DISABLE_TEST_MAIN)
+  target_link_libraries(test_capabilities_mtls PRIVATE ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_capabilities_mtls COMMAND test_capabilities_mtls)
+  set_tests_properties(integration_capabilities_mtls PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
 endif()
