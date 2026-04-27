@@ -25,12 +25,14 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/http_server/routes_verifiers.c
   src/domain/attestation_challenge/challenge.c
   src/infrastructure/crypto/nonce_random.c
+  src/infrastructure/memory/challenge_store_memory.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
 target_include_directories(vantaq_core PUBLIC include)
 find_package(OpenSSL REQUIRED)
-target_link_libraries(vantaq_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+find_package(Threads REQUIRED)
+target_link_libraries(vantaq_core PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
 
 if(MSVC)
   target_compile_options(vantaq_core PRIVATE /W4)
@@ -103,6 +105,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_nonce_random tests/unit/test_nonce_random.c)
   target_link_libraries(test_nonce_random PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::Crypto)
   add_test(NAME unit_nonce_random COMMAND test_nonce_random)
+
+  add_executable(test_challenge_store_memory tests/unit/test_challenge_store_memory.c)
+  target_link_libraries(test_challenge_store_memory PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_challenge_store_memory COMMAND test_challenge_store_memory)
 
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
   target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})
