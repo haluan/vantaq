@@ -38,6 +38,7 @@ struct vantaq_http_health_context {
     bool dev_allow_all_networks;
     struct vantaq_audit_log *audit_log;
     struct vantaq_challenge_store *challenge_store;
+    size_t challenge_ttl_seconds;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
     void *io_ctx;

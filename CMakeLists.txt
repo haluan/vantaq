@@ -112,6 +112,10 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_challenge_store_memory PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_challenge_store_memory COMMAND test_challenge_store_memory)
 
+  add_executable(test_challenge_ttl_config tests/unit/test_challenge_ttl_config.c)
+  target_link_libraries(test_challenge_ttl_config PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_challenge_ttl_config COMMAND test_challenge_ttl_config)
+
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
   target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_cli_smoke COMMAND test_cli_smoke)

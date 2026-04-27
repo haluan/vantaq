@@ -18,9 +18,10 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     char json[VANTAQ_CHALLENGE_JSON_BUF_SIZE];
     char response[VANTAQ_CHALLENGE_JSON_BUF_SIZE + 256];
     char purpose[64] = "remote_attestation";
-    long ttl         = 30;
+    long ttl         = (long)ctx->challenge_ttl_seconds;
     int n;
     const char *body_start;
+    const char *ttl_pos;
 
     // Basic body parsing (skipping headers)
     body_start = strstr(request_body, "\r\n\r\n");
@@ -38,6 +39,22 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     // Do not accept verifier_id from request body (prevent spoofing)
     if (strstr(body_start, "\"verifier_id\"") != NULL) {
         return vantaq_http_send_status_response(connection, 400);
+    }
+
+    // Parse requested_ttl_seconds if present
+    ttl_pos = strstr(body_start, "\"requested_ttl_seconds\"");
+    if (ttl_pos != NULL) {
+        long requested_ttl = 0;
+        const char *val    = strchr(ttl_pos, ':');
+        if (val != NULL) {
+            requested_ttl = atol(val + 1);
+            if (requested_ttl <= 0) {
+                return vantaq_http_send_status_response(connection, 400);
+            }
+            if (requested_ttl < ttl) {
+                ttl = requested_ttl;
+            }
+        }
     }
 
     // Call application service

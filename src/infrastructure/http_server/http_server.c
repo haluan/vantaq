@@ -968,6 +968,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
     health_ctx.audit_log                  = audit_log;
     health_ctx.challenge_store            = options->challenge_store;
+    health_ctx.challenge_ttl_seconds      = options->challenge_ttl_seconds;
     health_ctx.err_logger                 = options->write_err;
     health_ctx.io_ctx                     = options->io_ctx;
     if (clock_gettime(CLOCK_MONOTONIC, &health_ctx.started_at) != 0) {

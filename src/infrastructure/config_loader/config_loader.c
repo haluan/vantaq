@@ -28,6 +28,7 @@ enum vantaq_section {
     VANTAQ_SECTION_NETWORK_ACCESS,
     VANTAQ_SECTION_AUDIT,
     VANTAQ_SECTION_VERIFIERS,
+    VANTAQ_SECTION_CHALLENGE,
 };
 
 struct vantaq_config_loader {
@@ -1121,6 +1122,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 has_active_network_subnet_list = false;
                 continue;
             }
+            if (strcmp(key, "challenge") == 0) {
+                section                        = VANTAQ_SECTION_CHALLENGE;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
+                continue;
+            }
 
             loader_set_error(loader, "unknown top-level key %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
@@ -1361,6 +1368,20 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
 
             loader_set_error(loader, "unknown audit field %s", key);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+
+        if (section == VANTAQ_SECTION_CHALLENGE) {
+            if (strcmp(key, "ttl_seconds") == 0) {
+                rc = parse_size_t(loader, "challenge.ttl_seconds", value,
+                                  &tmp->challenge_ttl_seconds, &tmp->has_challenge_ttl_seconds);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown challenge field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -1716,4 +1737,16 @@ const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime
         return NULL;
     }
     return config->verifiers[verifier_index].allowed_apis.items[api_index];
+}
+
+size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, challenge_ttl_seconds) +
+                             sizeof(config->challenge_ttl_seconds)) {
+        return 30;
+    }
+    if (!config->has_challenge_ttl_seconds) {
+        return 30;
+    }
+    return config->challenge_ttl_seconds;
 }

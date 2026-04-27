@@ -379,6 +379,7 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             vantaq_runtime_tls_trusted_client_ca_path(config);
         server_options.tls_require_client_cert = vantaq_runtime_tls_require_client_cert(config);
         server_options.challenge_store         = store;
+        server_options.challenge_ttl_seconds   = vantaq_runtime_challenge_ttl_seconds(config);
         server_options.write_out               = io->write_out;
         server_options.write_err               = io->write_err;
         server_options.io_ctx                  = io->ctx;

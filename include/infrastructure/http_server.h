@@ -53,6 +53,7 @@ struct vantaq_http_server_options {
     const char *tls_trusted_client_ca_path;
     bool tls_require_client_cert;
     struct vantaq_challenge_store *challenge_store;
+    size_t challenge_ttl_seconds;
     vantaq_http_log_fn write_out;
     vantaq_http_log_fn write_err;
     void *io_ctx;
