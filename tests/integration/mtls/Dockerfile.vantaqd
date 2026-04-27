@@ -1,0 +1,11 @@
+FROM alpine:latest AS builder
+RUN apk add --no-cache gcc musl-dev cmake make openssl-dev
+WORKDIR /build
+COPY . .
+RUN cmake -S . -B build -DVANTAQ_BUILD_TESTS=OFF
+RUN cmake --build build
+
+FROM alpine:latest
+RUN apk add --no-cache openssl
+COPY --from=builder /build/bin/vantaqd /usr/local/bin/vantaqd
+CMD ["/usr/local/bin/vantaqd"]

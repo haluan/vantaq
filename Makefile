@@ -50,3 +50,12 @@ integration-test-mtls-identity:
 integration-test-mtls-capabilities:
 	$(COMPOSE) up --build -d device-1
 	./scripts/mtls_capabilities_smoke.sh
+
+test-mtls:
+	@echo "Setting up PKI for integration tests..."
+	@./tests/integration/mtls/setup_pki.sh ./tests/integration/mtls/certs
+	@echo "Running mTLS integration tests in Docker..."
+	@$(COMPOSE) -f tests/integration/mtls/docker-compose.yml up --build --abort-on-container-exit --exit-code-from test-runner
+	@echo "Cleaning up..."
+	@$(COMPOSE) -f tests/integration/mtls/docker-compose.yml down
+	@rm -rf tests/integration/mtls/certs

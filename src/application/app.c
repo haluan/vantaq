@@ -6,11 +6,7 @@
 #include "infrastructure/config_loader.h"
 #include "infrastructure/http_server.h"
 
-#ifdef __linux__
-#include <linux/limits.h>
-#else
 #include <limits.h>
-#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>

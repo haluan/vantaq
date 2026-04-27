@@ -1,0 +1,56 @@
+server:
+  listen_address: 0.0.0.0
+  listen_port: 8443
+  version: 1.0.0-test
+  tls:
+    enabled: true
+    server_cert_path: /etc/vantaqd/certs/device-server.crt
+    server_key_path: /etc/vantaqd/certs/device-server.key
+    trusted_client_ca_path: /etc/vantaqd/certs/verifier-ca.crt
+    require_client_cert: true
+
+verifiers:
+  - verifier_id: govt-verifier-01
+    cert_subject_cn: govt-verifier-01
+    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01
+    status: active
+    roles:
+      - verifier
+    allowed_apis:
+      - GET /v1/health
+      - GET /v1/device/identity
+      - GET /v1/device/capabilities
+      - GET /v1/security/verifiers/govt-verifier-01
+
+  - verifier_id: admin-verifier
+    cert_subject_cn: admin-verifier
+    cert_san_uri: spiffe://vantaqd/verifier/admin-verifier
+    status: active
+    roles:
+      - owner-admin
+    allowed_apis:
+      - "*"
+
+device_identity:
+  device_id: test-device-01
+  model: vantaq-x1
+  serial_number: SN123456
+  manufacturer: Vantaq Corp
+  firmware_version: 2.1.0
+
+capabilities:
+  supported_claims:
+    - device_identity
+  signature_algorithms: []
+  evidence_formats: []
+  challenge_modes: []
+  storage_modes: []
+
+network_access:
+  allowed_subnets:
+    - 0.0.0.0/0
+  dev_allow_all_networks: true
+
+audit:
+  max_bytes: 1048576
+  path: /var/log/vantaqd/audit.log

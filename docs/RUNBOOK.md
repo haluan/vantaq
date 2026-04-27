@@ -153,3 +153,68 @@ docker compose run --rm rogue-verifier http://10.60.10.10:8080/v1/health
 ```text
 FAIL/DENIED (HTTP 403)
 ```
+
+### mTLS Integration Tests
+
+This suite validates mTLS enforcement, verifier allowlisting, and Metadata API authorization.
+
+1. Run the automated suite:
+
+```bash
+make test-mtls
+```
+
+#### Manual Execution via Docker Compose
+
+If you need to debug the mTLS environment:
+
+1. Generate the test certificates:
+
+```bash
+./tests/integration/mtls/setup_pki.sh ./tests/integration/mtls/certs
+```
+
+2. Start the environment:
+
+```bash
+docker compose -f tests/integration/mtls/docker-compose.yml up --build
+```
+
+3. Run the tests:
+
+```bash
+docker compose -f tests/integration/mtls/docker-compose.yml run --rm test-runner
+```
+
+4. Clean up:
+
+```bash
+docker compose -f tests/integration/mtls/docker-compose.yml down
+rm -rf tests/integration/mtls/certs
+```
+
+2. Behavior:
+   - Automatically generates test PKI certificates.
+   - Spins up `vantaqd` and a `test-runner` in Docker.
+   - Validates:
+     - Successful access with valid verifier cert.
+     - Rejection of missing/untrusted certificates.
+     - Rejection of unknown Verifier IDs (403).
+     - Role-based access to Verifier Metadata API.
+
+### Verifier Metadata API
+
+Retrieve metadata for a specific verifier.
+
+**Endpoint**: `GET /v1/security/verifiers/{verifier_id}`
+
+**Authorization**:
+- Verifiers can query their own metadata.
+- Users with `owner-admin` role (configurable) can query any verifier.
+
+**Example Request (using curl with mTLS)**:
+
+```bash
+curl --cacert ca.crt --cert verifier.crt --key verifier.key \
+     https://localhost:8443/v1/security/verifiers/govt-verifier-01
+```

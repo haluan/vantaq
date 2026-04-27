@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  vantaqd-server:
+    build:
+      context: ../../../
+      dockerfile: tests/integration/mtls/Dockerfile.vantaqd
+    container_name: vantaqd-server
+    volumes:
+      - ./vantaqd.yaml:/etc/vantaqd/vantaqd.yaml
+      - ./certs:/etc/vantaqd/certs
+      - vantaq-logs:/var/log/vantaqd
+    command: /usr/local/bin/vantaqd --config /etc/vantaqd/vantaqd.yaml
+    networks:
+      - test-net
+    expose:
+      - "8443"
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    container_name: test-runner
+    depends_on:
+      - vantaqd-server
+    volumes:
+      - .:/tests
+      - ./certs:/certs
+    working_dir: /tests
+    entrypoint: /bin/sh
+    command: ./run.sh
+    networks:
+      - test-net
+
+networks:
+  test-net:
+
+volumes:
+  vantaq-logs:
