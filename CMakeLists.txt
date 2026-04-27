@@ -23,6 +23,7 @@ set(VANTAQ_COMMON_SOURCES
   src/application/security/verifier_lookup.c
   src/application/security/get_verifier_metadata.c
   src/infrastructure/http_server/routes_verifiers.c
+  src/domain/attestation_challenge/challenge.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -93,6 +94,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_verifier_policy tests/unit/test_verifier_policy.c)
   target_link_libraries(test_verifier_policy PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_verifier_policy COMMAND test_verifier_policy)
+
+  add_executable(test_challenge_domain tests/unit/test_challenge_domain.c)
+  target_link_libraries(test_challenge_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_challenge_domain COMMAND test_challenge_domain)
 
   add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
   target_link_libraries(test_cli_smoke PRIVATE ${VANTAQ_CMOCKA_TARGET})
