@@ -33,10 +33,10 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(struct vantaq_challenge_sto
     size_t canonical_len               = 0;
     char *sig_b64                      = NULL;
 
-    // 1. Find and consume challenge (Atomic lookup and mark-used)
+    // 1. Find challenge without consuming it yet (prevent TOCTOU later)
     // Note: current_time_unix is in seconds, store expects ms.
     enum vantaq_challenge_store_status store_status = vantaq_challenge_store_find_and_consume(
-        store, req->challenge_id, current_time_unix * 1000, true, &challenge);
+        store, req->challenge_id, current_time_unix * 1000, false, &challenge);
 
     if (store_status == VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
         return VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_NOT_FOUND;
@@ -46,9 +46,10 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(struct vantaq_challenge_sto
         return VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
     }
 
-    // Double check used status (although find_and_consume with consume=true should handle it)
-    // If it was already used, store_status would likely not be OK depending on implementation.
-    // In this codebase, vantaq_challenge_is_used is checked.
+    // Double check used status (reject already used challenge)
+    if (vantaq_challenge_is_used(challenge)) {
+        return VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED;
+    }
 
     // 2. Validate challenge properties
     if (strcmp(vantaq_challenge_get_nonce_hex(challenge), req->nonce) != 0) {
@@ -91,7 +92,14 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(struct vantaq_challenge_sto
         goto cleanup;
     }
 
-    // 6. Success
+    // 6. After successful signing, atomically mark the challenge as used.
+    // If another thread already marked it used while we were signing, we fail here.
+    if (!vantaq_challenge_mark_used(challenge)) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED;
+        goto cleanup;
+    }
+
+    // 7. Success
     out_res->evidence      = evidence;
     out_res->signature_b64 = sig_b64;
     evidence               = NULL; // Transferred ownership

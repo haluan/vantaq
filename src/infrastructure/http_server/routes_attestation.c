@@ -256,6 +256,10 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             reason      = "challenge_expired";
             http_status = 409;
             break;
+        case VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED:
+            reason      = "challenge_used";
+            http_status = 409;
+            break;
         case VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH:
             reason      = "nonce_mismatch";
             http_status = 409;

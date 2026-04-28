@@ -165,6 +165,32 @@ static void test_create_evidence_verifier_mismatch(void **state) {
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH);
 }
 
+static void test_create_evidence_used_challenge(void **state) {
+    struct CreateEvidenceTestSuite *s  = *state;
+    struct vantaq_challenge *challenge = NULL;
+
+    vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
+    const char *challenge_id = vantaq_challenge_get_id(challenge);
+    const char *nonce        = vantaq_challenge_get_nonce_hex(challenge);
+
+    struct vantaq_create_evidence_req req = {
+        .challenge_id = challenge_id, .nonce = nonce, .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_res res;
+    memset(&res, 0, sizeof(res));
+
+    // First use should succeed
+    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
+        s->store, s->device_key, "verifier-1", &req, s->current_time, &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_OK);
+    vantaq_create_evidence_res_free(&res);
+
+    // Second use should fail with CHALLENGE_USED
+    memset(&res, 0, sizeof(res));
+    err = vantaq_app_create_evidence(s->store, s->device_key, "verifier-1", &req, s->current_time,
+                                     &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_create_evidence_success, suite_setup, suite_teardown),
@@ -175,6 +201,8 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_create_evidence_challenge_expired, suite_setup,
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_create_evidence_verifier_mismatch, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_create_evidence_used_challenge, suite_setup,
                                         suite_teardown),
     };
     return cmocka_run_group_tests_name("unit_create_evidence_validation", tests, NULL, NULL);
