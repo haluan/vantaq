@@ -29,6 +29,7 @@ set(VANTAQ_COMMON_SOURCES
   src/application/attestation_challenge/create_challenge.c
   src/infrastructure/http_server/routes_attestation.c
   src/infrastructure/http_server/json_utils.c
+  src/domain/evidence/evidence.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -135,4 +136,8 @@ if(VANTAQ_BUILD_TESTS)
   set_tests_properties(integration_capabilities_mtls PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
+
+  add_executable(test_evidence_domain tests/unit/test_evidence_domain.c)
+  target_link_libraries(test_evidence_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_evidence_domain COMMAND test_evidence_domain)
 endif()
