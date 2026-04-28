@@ -22,6 +22,7 @@
 // Suite Pattern: Struct to hold test state
 struct CreateEvidenceTestSuite {
     struct vantaq_challenge_store *store;
+    struct vantaq_latest_evidence_store *latest_store;
     vantaq_device_key_t *device_key;
     int64_t current_time;
 };
@@ -49,8 +50,9 @@ static int suite_setup(void **state) {
     if (!s)
         return -1;
 
-    s->store      = vantaq_challenge_store_memory_create(10, 5);
-    s->device_key = NULL;
+    s->store        = vantaq_challenge_store_memory_create(10, 5);
+    s->latest_store = vantaq_latest_evidence_store_create(5);
+    s->device_key   = NULL;
     vantaq_device_key_load(TEST_PRIV_KEY, TEST_PUB_KEY, &s->device_key);
     s->current_time = (int64_t)time(NULL);
 
@@ -65,6 +67,8 @@ static int suite_teardown(void **state) {
             vantaq_device_key_destroy(s->device_key);
         if (s->store)
             vantaq_challenge_store_destroy(s->store);
+        if (s->latest_store)
+            vantaq_latest_evidence_store_destroy(s->latest_store);
         free(s);
     }
     remove_test_keys();
@@ -85,7 +89,7 @@ static void test_create_evidence_success(void **state) {
     memset(&res, 0, sizeof(res));
 
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-1", &req, s->current_time, &res);
+        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_OK);
     s_assert_non_null(s, res.evidence);
@@ -104,7 +108,7 @@ static void test_create_evidence_challenge_not_found(void **state) {
     memset(&res, 0, sizeof(res));
 
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-1", &req, s->current_time, &res);
+        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_NOT_FOUND);
 }
@@ -121,7 +125,7 @@ static void test_create_evidence_nonce_mismatch(void **state) {
     memset(&res, 0, sizeof(res));
 
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-1", &req, s->current_time, &res);
+        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH);
 }
@@ -141,7 +145,7 @@ static void test_create_evidence_challenge_expired(void **state) {
 
     // Request 10 seconds later
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-1", &req, s->current_time + 10, &res);
+        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time + 10, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_EXPIRED);
 }
@@ -160,7 +164,7 @@ static void test_create_evidence_verifier_mismatch(void **state) {
 
     // Request from verifier-2 instead of verifier-1
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-2", &req, s->current_time, &res);
+        s->store, s->latest_store, s->device_key, "verifier-2", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH);
 }
@@ -180,14 +184,14 @@ static void test_create_evidence_used_challenge(void **state) {
 
     // First use should succeed
     vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->device_key, "verifier-1", &req, s->current_time, &res);
+        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_OK);
     vantaq_create_evidence_res_free(&res);
 
     // Second use should fail with CHALLENGE_USED
     memset(&res, 0, sizeof(res));
-    err = vantaq_app_create_evidence(s->store, s->device_key, "verifier-1", &req, s->current_time,
-                                     &res);
+    err = vantaq_app_create_evidence(s->store, s->latest_store, s->device_key, "verifier-1", &req,
+                                     s->current_time, &res);
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED);
 }
 

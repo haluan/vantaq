@@ -4,6 +4,7 @@
 #ifndef VANTAQ_APPLICATION_EVIDENCE_CREATE_EVIDENCE_H
 #define VANTAQ_APPLICATION_EVIDENCE_CREATE_EVIDENCE_H
 
+#include "application/evidence/latest_evidence_store.h"
 #include "domain/attestation_challenge/challenge_store.h"
 #include "domain/evidence/evidence.h"
 #include "infrastructure/crypto/device_key_loader.h"
@@ -39,6 +40,7 @@ struct vantaq_create_evidence_res {
  */
 vantaq_app_evidence_err_t vantaq_app_create_evidence(
     struct vantaq_challenge_store *store,
+    struct vantaq_latest_evidence_store *latest_store,
     const vantaq_device_key_t *device_key,
     const char *verifier_id,
     const struct vantaq_create_evidence_req *req,

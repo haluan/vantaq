@@ -28,6 +28,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/memory/challenge_store_memory.c
   src/application/attestation_challenge/create_challenge.c
   src/application/evidence/create_evidence.c
+  src/application/evidence/latest_evidence_store.c
   src/infrastructure/http_server/routes_attestation.c
   src/infrastructure/http_server/json_utils.c
   src/domain/evidence/evidence.c
@@ -160,4 +161,8 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_create_evidence tests/unit/test_create_evidence.c)
   target_link_libraries(test_create_evidence PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::Crypto)
   add_test(NAME unit_create_evidence COMMAND test_create_evidence)
+
+  add_executable(test_latest_evidence_store tests/unit/test_latest_evidence_store.c)
+  target_link_libraries(test_latest_evidence_store PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_latest_evidence_store COMMAND test_latest_evidence_store)
 endif()

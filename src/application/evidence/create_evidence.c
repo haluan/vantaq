@@ -16,12 +16,12 @@
 #define MOCK_DEVICE_ID "edge-gw-001"
 #define SIGNATURE_ALG "ECDSA-P256-SHA256"
 
-vantaq_app_evidence_err_t vantaq_app_create_evidence(struct vantaq_challenge_store *store,
-                                                     const vantaq_device_key_t *device_key,
-                                                     const char *verifier_id,
-                                                     const struct vantaq_create_evidence_req *req,
-                                                     int64_t current_time_unix,
-                                                     struct vantaq_create_evidence_res *out_res) {
+vantaq_app_evidence_err_t
+vantaq_app_create_evidence(struct vantaq_challenge_store *store,
+                           struct vantaq_latest_evidence_store *latest_store,
+                           const vantaq_device_key_t *device_key, const char *verifier_id,
+                           const struct vantaq_create_evidence_req *req, int64_t current_time_unix,
+                           struct vantaq_create_evidence_res *out_res) {
     if (!store || !device_key || !verifier_id || !req || !out_res) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
     }
@@ -99,7 +99,12 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(struct vantaq_challenge_sto
         goto cleanup;
     }
 
-    // 7. Success
+    // 7. Store latest evidence in memory if store provided
+    if (latest_store) {
+        (void)vantaq_latest_evidence_store_put(latest_store, verifier_id, evidence, sig_b64);
+    }
+
+    // 8. Success
     out_res->evidence      = evidence;
     out_res->signature_b64 = sig_b64;
     evidence               = NULL; // Transferred ownership

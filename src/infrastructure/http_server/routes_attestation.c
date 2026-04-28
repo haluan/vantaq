@@ -240,8 +240,8 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
     // Note: claims are hardcoded in the application service for now as per spec.
 
     vantaq_app_evidence_err_t app_err = vantaq_app_create_evidence(
-        ctx->challenge_store, ctx->device_key, req_ctx->verifier_auth.identity.id, &req,
-        (int64_t)time(NULL), &res);
+        ctx->challenge_store, ctx->latest_evidence_store, ctx->device_key,
+        req_ctx->verifier_auth.identity.id, &req, (int64_t)time(NULL), &res);
 
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
         const char *reason = "internal_error";
