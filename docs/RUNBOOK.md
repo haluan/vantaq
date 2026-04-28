@@ -109,7 +109,7 @@ ENSURE_DEVICE=0 ./tests/integration/test_verifier_cli_verify_evidence.sh
 ENSURE_DEVICE=1 DEVICE_READY_SLEEP_SECONDS=3 ./tests/integration/test_verifier_cli_verify_evidence.sh
 ```
 
-### Allowed-Subnet Health Check (T09)
+### Allowed-Subnet Health Check
 
 #### Via Local Make (Host Network)
 
