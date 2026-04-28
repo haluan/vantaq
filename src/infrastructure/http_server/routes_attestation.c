@@ -254,11 +254,11 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             break;
         case VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_EXPIRED:
             reason      = "challenge_expired";
-            http_status = 403;
+            http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH:
             reason      = "nonce_mismatch";
-            http_status = 400;
+            http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH:
             reason      = "verifier_mismatch";
