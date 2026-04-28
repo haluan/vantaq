@@ -166,3 +166,14 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_latest_evidence_store PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_latest_evidence_store COMMAND test_latest_evidence_store)
 endif()
+
+option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)
+
+if(VANTAQ_BUILD_TOOLS AND EXISTS "${CMAKE_SOURCE_DIR}/tools/verifier-cli/verify_evidence.c")
+  # Tools
+  add_executable(verify_evidence tools/verifier-cli/verify_evidence.c)
+  target_link_libraries(verify_evidence PRIVATE vantaq_core OpenSSL::Crypto OpenSSL::SSL)
+  set_target_properties(verify_evidence PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin"
+  )
+endif()

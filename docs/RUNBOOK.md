@@ -82,6 +82,33 @@ docker compose run --rm test-runner
 docker compose down
 ```
 
+### Verifier CLI Evidence Integration
+
+Run `tests/integration/test_verifier_cli_verify_evidence.sh` with a single daemon context for all steps.
+Do not mix `docker-compose` steps on one daemon with script execution on another daemon.
+Use container recreation instead of `restart` when picking up new image builds.
+
+1. Docker daemon flow:
+
+```bash
+docker-compose up --build -d --force-recreate device-1
+ENSURE_DEVICE=0 ./tests/integration/test_verifier_cli_verify_evidence.sh
+```
+
+2. Podman socket flow (apply the same `DOCKER_HOST` to all steps):
+
+```bash
+export DOCKER_HOST=unix:///var/folders/yw/c4ymmzxs23j3ww74wqpw9txm0000gn/T/podman/podman-machine-default-api.sock
+docker-compose up --build -d --force-recreate device-1
+ENSURE_DEVICE=0 ./tests/integration/test_verifier_cli_verify_evidence.sh
+```
+
+3. Optional script-managed lifecycle:
+
+```bash
+ENSURE_DEVICE=1 DEVICE_READY_SLEEP_SECONDS=3 ./tests/integration/test_verifier_cli_verify_evidence.sh
+```
+
 ### Allowed-Subnet Health Check (T09)
 
 #### Via Local Make (Host Network)

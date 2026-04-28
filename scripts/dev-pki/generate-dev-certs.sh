@@ -42,29 +42,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 -days 3650 -nodes \
   -subj "/CN=vantaqd-dev-device-ca" \
   -keyout "${CERT_DIR}/device-ca.key" \
   -out "${CERT_DIR}/device-ca.crt"
 
-openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 -days 3650 -nodes \
   -subj "/CN=vantaqd-dev-verifier-ca" \
   -keyout "${CERT_DIR}/verifier-ca.key" \
   -out "${CERT_DIR}/verifier-ca.crt"
 
-openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 -days 3650 -nodes \
   -subj "/CN=vantaqd-dev-untrusted-verifier-ca" \
   -keyout "${CERT_DIR}/untrusted-verifier-ca.key" \
   -out "${CERT_DIR}/untrusted-verifier-ca.crt"
 
-openssl req -new -newkey rsa:2048 -nodes \
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -subj "/CN=device-1.vantaqd.local" \
   -keyout "${CERT_DIR}/device-server.key" \
   -out "${TMP_DIR}/device-server.csr"
 
 cat > "${TMP_DIR}/device-server.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
+keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth
 subjectAltName=DNS:device-1,DNS:localhost,IP:127.0.0.1
 EOF
@@ -77,14 +77,14 @@ openssl x509 -req -sha256 -days 825 \
   -out "${CERT_DIR}/device-server.crt" \
   -extfile "${TMP_DIR}/device-server.ext"
 
-openssl req -new -newkey rsa:2048 -nodes \
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -subj "/CN=govt-verifier-01" \
   -keyout "${CERT_DIR}/govt-verifier-01.key" \
   -out "${TMP_DIR}/govt-verifier-01.csr"
 
 cat > "${TMP_DIR}/verifier-client.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
+keyUsage=critical,digitalSignature
 extendedKeyUsage=clientAuth
 subjectAltName=URI:spiffe://vantaqd/verifier/govt-verifier-01
 EOF
@@ -97,7 +97,7 @@ openssl x509 -req -sha256 -days 825 \
   -out "${CERT_DIR}/govt-verifier-01.crt" \
   -extfile "${TMP_DIR}/verifier-client.ext"
 
-openssl req -new -newkey rsa:2048 -nodes \
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -subj "/CN=govt-verifier-01" \
   -keyout "${CERT_DIR}/govt-verifier-01-untrusted.key" \
   -out "${TMP_DIR}/govt-verifier-01-untrusted.csr"

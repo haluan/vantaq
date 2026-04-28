@@ -9,6 +9,7 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY include ./include
 COPY src ./src
+COPY tools ./tools
 COPY cmake ./cmake
 COPY CMakeLists.txt ./CMakeLists.txt
 COPY Makefile ./Makefile
@@ -20,7 +21,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /etc/vantaqd \
+    && mkdir -p /etc/vantaqd /var/lib/vantaqd \
     && cat > /etc/vantaqd/vantaqd.yaml <<'YAML'
 server:
   listen_address: 0.0.0.0
@@ -45,6 +46,8 @@ verifiers:
       - GET /v1/device/identity
       - GET /v1/device/capabilities
       - GET /v1/security/verifiers/{verifier_id}
+      - POST /v1/attestation/challenge
+      - POST /v1/attestation/evidence
 
 device_identity:
   device_id: edge-gw-001
@@ -52,6 +55,8 @@ device_identity:
   serial_number: SN-001
   manufacturer: ExampleCorp
   firmware_version: 0.1.0-demo
+  device_priv_key_path: /etc/vantaqd/certs/device-server.key
+  device_pub_key_path: /etc/vantaqd/certs/device-server.crt
 
 capabilities:
   supported_claims:

@@ -22,6 +22,7 @@ verifiers:
       - GET /v1/device/capabilities
       - GET /v1/security/verifiers/{verifier_id}
       - POST /v1/attestation/challenge
+      - POST /v1/attestation/evidence
 
 device_identity:
   device_id: edge-gw-001
@@ -29,6 +30,8 @@ device_identity:
   serial_number: SN-001
   manufacturer: ExampleCorp
   firmware_version: 0.1.0-demo
+  device_priv_key_path: /etc/vantaqd/certs/device-server.key
+  device_pub_key_path: /etc/vantaqd/certs/device-server.crt
 
 capabilities:
   supported_claims:
@@ -41,7 +44,7 @@ capabilities:
 network_access:
   allowed_subnets:
     - 10.50.10.0/24
-  dev_allow_all_networks: false
+  dev_allow_all_networks: true
 
 audit:
   max_bytes: 65536
