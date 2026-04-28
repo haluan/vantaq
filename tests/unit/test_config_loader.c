@@ -391,6 +391,81 @@ static void test_missing_network_access_defaults_to_fail_closed(void **state) {
     remove_temp_yaml(path);
 }
 
+static void test_challenge_size_overflow_fails_parse(void **state) {
+    (void)state;
+    const char *yaml =
+        YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID YAML_CAPABILITIES_VALID
+        "challenge:\n"
+        "  ttl_seconds: 999999999999999999999999\n"
+        "  max_global: 100\n"
+        "  max_per_verifier: 10\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(strstr(vantaq_config_loader_last_error(loader), "challenge.ttl_seconds"));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_inline_list_supports_quoted_item_with_comma(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_DEVICE_VALID YAML_CAPABILITIES_VALID
+        "verifiers:\n"
+        "  - verifier_id: govt-verifier-01\n"
+        "    cert_subject_cn: govt-verifier-01\n"
+        "    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01\n"
+        "    status: active\n"
+        "    roles: [verifier]\n"
+        "    allowed_apis: [\"GET /v1/health,verbose\"]\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+    const struct vantaq_runtime_config *config;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_OK);
+
+    config = vantaq_config_loader_config(loader);
+    assert_int_equal(vantaq_runtime_verifier_allowed_api_count(config, 0), 1);
+    assert_string_equal(vantaq_runtime_verifier_allowed_api_item(config, 0, 0),
+                        "GET /v1/health,verbose");
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_tab_indentation_is_rejected(void **state) {
+    (void)state;
+    const char *yaml = "server:\n"
+                       "\tlisten_address: 0.0.0.0\n"
+                       "  listen_port: 8080\n"
+                       "  version: 0.1.0\n"
+                       "  tls:\n"
+                       "    enabled: false\n"
+                       "    server_cert_path: /etc/hosts\n"
+                       "    server_key_path: /etc/hosts\n"
+                       "    trusted_client_ca_path: /etc/hosts\n"
+                       "    require_client_cert: true\n";
+    char path[256]   = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(strstr(vantaq_config_loader_last_error(loader), "tabs are not allowed"));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_valid_yaml_loads_successfully),
@@ -404,6 +479,9 @@ int main(void) {
         cmocka_unit_test(test_empty_allowed_subnets_fail_closed_default),
         cmocka_unit_test(test_empty_allowed_subnets_with_dev_allow_all_succeeds),
         cmocka_unit_test(test_missing_network_access_defaults_to_fail_closed),
+        cmocka_unit_test(test_challenge_size_overflow_fails_parse),
+        cmocka_unit_test(test_inline_list_supports_quoted_item_with_comma),
+        cmocka_unit_test(test_tab_indentation_is_rejected),
     };
 
     return cmocka_run_group_tests_name("unit_config_loader", tests, NULL, NULL);

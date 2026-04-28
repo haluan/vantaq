@@ -9,6 +9,7 @@
 
 typedef int (*vantaq_http_log_fn)(void *ctx, const char *text);
 typedef struct vantaq_device_key_t vantaq_device_key_t;
+struct vantaq_latest_evidence_store;
 
 enum vantaq_http_server_status {
     VANTAQ_HTTP_SERVER_STATUS_OK = 0,
@@ -54,6 +55,7 @@ struct vantaq_http_server_options {
     const char *tls_trusted_client_ca_path;
     bool tls_require_client_cert;
     struct vantaq_challenge_store *challenge_store;
+    struct vantaq_latest_evidence_store *latest_evidence_store;
     const vantaq_device_key_t *device_key;
     size_t challenge_ttl_seconds;
     vantaq_http_log_fn write_out;
@@ -61,6 +63,10 @@ struct vantaq_http_server_options {
     void *io_ctx;
 };
 
+/*
+ * Runs the HTTP server loop in single-threaded mode. Each client connection is
+ * handled synchronously before the next accept() iteration.
+ */
 enum vantaq_http_server_status vantaq_http_server_run(const struct vantaq_http_server_options *options);
 const char *vantaq_http_server_status_text(enum vantaq_http_server_status status);
 

@@ -248,7 +248,7 @@ static void test_replayed_challenge_rejected(void **state) {
         pclose(fp);
 
         s_assert_non_null(s, strstr(body, "HTTP/1.1 409"));
-        s_assert_non_null(s, strstr(body, "\"code\":\"CHALLENGE_ALREADY_USED\""));
+        s_assert_non_null(s, strstr(body, "\"code\":\"challenge_already_used\""));
     }
 }
 

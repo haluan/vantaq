@@ -13,7 +13,8 @@ typedef enum {
     VANTAQ_SIGNER_ERR_KEY_LOAD = 2,
     VANTAQ_SIGNER_ERR_SIGN_FAILED = 3,
     VANTAQ_SIGNER_ERR_BASE64_FAILED = 4,
-    VANTAQ_SIGNER_ERR_MALLOC_FAILED = 5
+    VANTAQ_SIGNER_ERR_MALLOC_FAILED = 5,
+    VANTAQ_SIGNER_ERR_UNSUPPORTED_ALG = 6
 } vantaq_signer_err_t;
 
 /**
@@ -33,7 +34,12 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
                                          char **out_signature_b64);
 
 /**
- * @brief Free the base64 signature allocated by vantaq_evidence_sign.
+ * @brief Destroy the base64 signature allocated by vantaq_evidence_sign.
+ */
+void vantaq_signature_b64_destroy(char *signature_b64);
+
+/**
+ * @brief Backward-compatible alias for vantaq_signature_b64_destroy.
  */
 void vantaq_signature_b64_free(char *signature_b64);
 

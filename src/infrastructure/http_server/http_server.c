@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <netdb.h>
 #include <openssl/x509.h>
 #include <signal.h>
@@ -86,11 +87,6 @@ int log_text(vantaq_http_log_fn logger, void *ctx, const char *text) {
 static void handle_term_signal(int signum) {
     (void)signum;
     g_stop_requested = 1;
-    int fd           = g_listener_fd;
-    if (fd >= 0) {
-        g_listener_fd = -1;
-        (void)close(fd);
-    }
 }
 
 static ssize_t connection_read(struct vantaq_http_connection *connection, void *buf, size_t len) {
@@ -156,6 +152,8 @@ int vantaq_http_send_status_response(struct vantaq_http_connection *connection, 
         status_text = "Bad Request";
     } else if (status_code == 403) {
         status_text = "Forbidden";
+    } else if (status_code == 413) {
+        status_text = "Content Too Large";
     }
 
     n = snprintf(response, sizeof(response),
@@ -362,7 +360,7 @@ static int send_health_response(struct vantaq_http_connection *connection,
                                 const struct vantaq_http_health_context *ctx) {
     char json[VANTAQ_HEALTH_JSON_BUF_SIZE];
     char response[VANTAQ_HEALTH_JSON_BUF_SIZE + 256];
-    int json_n;
+    size_t json_n;
     int response_n;
     long long uptime_seconds;
     size_t used;
@@ -386,12 +384,12 @@ static int send_health_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    json_n = (int)used;
+    json_n = used;
 
     response_n = snprintf(response, sizeof(response),
                           "HTTP/1.1 200 OK\r\n"
                           "Content-Type: application/json\r\n"
-                          "Content-Length: %d\r\n"
+                          "Content-Length: %zu\r\n"
                           "Connection: close\r\n"
                           "\r\n"
                           "%s",
@@ -407,7 +405,7 @@ static int send_identity_response(struct vantaq_http_connection *connection,
                                   const struct vantaq_http_health_context *ctx) {
     char json[VANTAQ_IDENTITY_JSON_BUF_SIZE];
     char response[VANTAQ_IDENTITY_JSON_BUF_SIZE + 256];
-    int json_n;
+    size_t json_n;
     int response_n;
     size_t used;
 
@@ -435,12 +433,12 @@ static int send_identity_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    json_n = (int)used;
+    json_n = used;
 
     response_n = snprintf(response, sizeof(response),
                           "HTTP/1.1 200 OK\r\n"
                           "Content-Type: application/json\r\n"
-                          "Content-Length: %d\r\n"
+                          "Content-Length: %zu\r\n"
                           "Connection: close\r\n"
                           "\r\n"
                           "%s",
@@ -457,7 +455,8 @@ static int send_capabilities_response(struct vantaq_http_connection *connection,
     char *json;
     char response_header[512];
     size_t used = 0;
-    int header_n, json_n;
+    int header_n;
+    size_t json_n;
     int result = 0;
 
     if (ctx == NULL || ctx->supported_claims == NULL || ctx->signature_algorithms == NULL ||
@@ -494,11 +493,11 @@ static int send_capabilities_response(struct vantaq_http_connection *connection,
         return -1;
     }
 
-    json_n   = (int)used;
+    json_n   = used;
     header_n = snprintf(response_header, sizeof(response_header),
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Type: application/json\r\n"
-                        "Content-Length: %d\r\n"
+                        "Content-Length: %zu\r\n"
                         "Connection: close\r\n"
                         "\r\n",
                         json_n);
@@ -612,10 +611,17 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
 static int parse_content_length(const char *headers) {
     const char *p = vantaq_strcasestr(headers, "Content-Length:");
     if (p != NULL) {
+        char *endptr;
+        long parsed;
         p += 15;
         while (*p == ' ' || *p == '\t')
             p++;
-        return atoi(p);
+        errno  = 0;
+        parsed = strtol(p, &endptr, 10);
+        if (errno == ERANGE || endptr == p || parsed < 0 || parsed > INT_MAX) {
+            return -1;
+        }
+        return (int)parsed;
     }
     return 0;
 }
@@ -709,6 +715,10 @@ static void handle_client(struct vantaq_http_connection *connection,
         if (header_end != NULL) {
             size_t header_len  = (size_t)(header_end - req_buf) + 4;
             int content_length = parse_content_length(req_buf);
+            if (content_length < 0) {
+                (void)vantaq_http_send_status_response(connection, 400);
+                goto cleanup;
+            }
 
             if (content_length > 0) {
                 size_t body_read = total_read - header_len;
@@ -723,6 +733,27 @@ static void handle_client(struct vantaq_http_connection *connection,
         /* Fallback for very simple clients (HTTP/0.9 or just \n) */
         if (strstr(req_buf, "\n\n") != NULL || strstr(req_buf, "\n\r\n") != NULL) {
             break;
+        }
+    }
+
+    if (total_read == sizeof(req_buf) - 1) {
+        char *header_end   = strstr(req_buf, "\r\n\r\n");
+        int content_length = parse_content_length(req_buf);
+        if (content_length < 0) {
+            (void)vantaq_http_send_status_response(connection, 400);
+            goto cleanup;
+        }
+        if (header_end == NULL) {
+            (void)vantaq_http_send_status_response(connection, 413);
+            goto cleanup;
+        }
+        if (content_length > 0) {
+            size_t header_len = (size_t)(header_end - req_buf) + 4;
+            size_t body_read  = total_read - header_len;
+            if (body_read < (size_t)content_length) {
+                (void)vantaq_http_send_status_response(connection, 413);
+                goto cleanup;
+            }
         }
     }
 
@@ -834,7 +865,8 @@ static void handle_client(struct vantaq_http_connection *connection,
         } else if (strncmp(path, "/v1/security/verifiers/", 23) == 0) {
             /* E-6: Prevent path traversal in verifier ID subpath */
             const char *id_segment = path + 23;
-            if (strstr(id_segment, "..") != NULL || strchr(id_segment, '/') != NULL) {
+            if (strstr(id_segment, "..") != NULL || strchr(id_segment, '/') != NULL ||
+                strchr(id_segment, '%') != NULL) {
                 rc = vantaq_http_send_status_response(connection, 400);
             } else {
                 rc = send_verifier_metadata_response(connection, health_ctx, &request_ctx,
@@ -947,6 +979,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     int listener                          = -1;
     bool signals_set                      = false;
     enum vantaq_http_server_status status = VANTAQ_HTTP_SERVER_STATUS_OK;
+    int accept_failures                   = 0;
     char startup[224];
     char tls_msg[256];
 
@@ -1065,6 +1098,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
     health_ctx.audit_log                  = audit_log;
     health_ctx.challenge_store            = options->challenge_store;
+    health_ctx.latest_evidence_store      = options->latest_evidence_store;
     health_ctx.device_key                 = options->device_key;
     health_ctx.challenge_ttl_seconds      = options->challenge_ttl_seconds;
     health_ctx.err_logger                 = options->write_err;
@@ -1087,10 +1121,16 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
             if (g_stop_requested || errno == EINTR || errno == EBADF) {
                 break;
             }
+            accept_failures++;
             log_text(options->write_err, options->io_ctx, "http server: accept failed\n");
-            (void)usleep(100000);
+            if (accept_failures >= 50) {
+                status = VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
+                break;
+            }
+            (void)usleep(100000U * (unsigned int)(accept_failures < 10 ? accept_failures : 10));
             continue;
         }
+        accept_failures = 0;
 
         {
             struct vantaq_http_connection connection;
@@ -1134,6 +1174,9 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
 
         if (fd >= 0) {
             (void)close(fd);
+            if (fd == listener) {
+                listener = -1;
+            }
         }
     }
 

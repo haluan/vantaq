@@ -83,8 +83,11 @@ static void test_create_evidence_success(void **state) {
     const char *challenge_id = vantaq_challenge_get_id(challenge);
     const char *nonce        = vantaq_challenge_get_nonce_hex(challenge);
 
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = challenge_id, .nonce = nonce, .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = challenge_id,
+                                             .nonce        = nonce,
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
@@ -96,14 +99,18 @@ static void test_create_evidence_success(void **state) {
     s_assert_non_null(s, res.signature_b64);
     s_assert_string_equal(s, vantaq_evidence_get_challenge_id(res.evidence), challenge_id);
     s_assert_string_equal(s, vantaq_evidence_get_nonce(res.evidence), nonce);
+    s_assert_string_equal(s, vantaq_evidence_get_signature(res.evidence), res.signature_b64);
 
     vantaq_create_evidence_res_free(&res);
 }
 
 static void test_create_evidence_challenge_not_found(void **state) {
     struct CreateEvidenceTestSuite *s     = *state;
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = "non-existent", .nonce = "abcd", .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = "non-existent",
+                                             .nonce        = "abcd",
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
@@ -119,8 +126,11 @@ static void test_create_evidence_nonce_mismatch(void **state) {
     vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
     const char *challenge_id = vantaq_challenge_get_id(challenge);
 
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = challenge_id, .nonce = "wrong-nonce", .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = challenge_id,
+                                             .nonce        = "wrong-nonce",
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
@@ -138,8 +148,11 @@ static void test_create_evidence_challenge_expired(void **state) {
     const char *challenge_id = vantaq_challenge_get_id(challenge);
     const char *nonce        = vantaq_challenge_get_nonce_hex(challenge);
 
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = challenge_id, .nonce = nonce, .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = challenge_id,
+                                             .nonce        = nonce,
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
@@ -157,8 +170,11 @@ static void test_create_evidence_verifier_mismatch(void **state) {
     const char *challenge_id = vantaq_challenge_get_id(challenge);
     const char *nonce        = vantaq_challenge_get_nonce_hex(challenge);
 
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = challenge_id, .nonce = nonce, .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = challenge_id,
+                                             .nonce        = nonce,
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
@@ -177,8 +193,11 @@ static void test_create_evidence_used_challenge(void **state) {
     const char *challenge_id = vantaq_challenge_get_id(challenge);
     const char *nonce        = vantaq_challenge_get_nonce_hex(challenge);
 
-    struct vantaq_create_evidence_req req = {
-        .challenge_id = challenge_id, .nonce = nonce, .claims = NULL, .claims_count = 0};
+    struct vantaq_create_evidence_req req = {.challenge_id = challenge_id,
+                                             .nonce        = nonce,
+                                             .device_id    = "test-device-1",
+                                             .claims       = NULL,
+                                             .claims_count = 0};
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 

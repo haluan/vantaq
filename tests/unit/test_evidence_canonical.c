@@ -42,7 +42,7 @@ static int suite_teardown(void **state) {
         vantaq_evidence_destroy(s->evidence);
     }
     if (s->canonical_buffer) {
-        vantaq_evidence_canonical_free(s->canonical_buffer);
+        vantaq_evidence_canonical_destroy(s->canonical_buffer);
     }
     free(s);
     return 0;
@@ -74,8 +74,8 @@ static void test_serialization_determinism(void **state) {
     s_assert_int_equal(s, len1, len2);
     s_assert_string_equal(s, buf1, buf2);
 
-    vantaq_evidence_canonical_free(buf1);
-    vantaq_evidence_canonical_free(buf2);
+    vantaq_evidence_canonical_destroy(buf1);
+    vantaq_evidence_canonical_destroy(buf2);
 }
 
 static void test_serialization_nonce_variation(void **state) {
@@ -100,8 +100,8 @@ static void test_serialization_nonce_variation(void **state) {
     // Must be different
     s_assert_false(s, (len1 == len2 && strcmp(buf1, buf2) == 0));
 
-    vantaq_evidence_canonical_free(buf1);
-    vantaq_evidence_canonical_free(buf2);
+    vantaq_evidence_canonical_destroy(buf1);
+    vantaq_evidence_canonical_destroy(buf2);
     vantaq_evidence_destroy(ev1);
     vantaq_evidence_destroy(ev2);
 }
@@ -120,7 +120,23 @@ static void test_serialization_signature_exclusion(void **state) {
     // Serialized output must NOT contain the signature value
     s_assert_null(s, strstr(buf, sig_val));
 
-    vantaq_evidence_canonical_free(buf);
+    vantaq_evidence_canonical_destroy(buf);
+}
+
+static void test_serialization_escapes_pipe_delimiter_in_claims(void **state) {
+    struct EvidenceCanonicalTestSuite *s = *state;
+
+    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-1", "purpose-1", 1000,
+                           "{\"alg\":\"ES256|RS256\"}", "alg-1", "sig-1", &s->evidence);
+
+    char *buf                 = NULL;
+    size_t len                = 0;
+    vantaq_evidence_err_t err = vantaq_evidence_serialize_canonical(s->evidence, &buf, &len);
+    s_assert_int_equal(s, err, VANTAQ_EVIDENCE_OK);
+    s_assert_non_null(s, buf);
+    s_assert_true(s, strstr(buf, "claims:{\"alg\":\"ES256\\|RS256\"}") != NULL);
+
+    vantaq_evidence_canonical_destroy(buf);
 }
 
 int main(void) {
@@ -131,6 +147,8 @@ int main(void) {
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_serialization_signature_exclusion, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_serialization_escapes_pipe_delimiter_in_claims,
+                                        suite_setup, suite_teardown),
     };
 
     return cmocka_run_group_tests_name("evidence_canonical_suite", tests, NULL, NULL);

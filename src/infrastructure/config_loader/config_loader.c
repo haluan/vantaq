@@ -5,6 +5,7 @@
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -321,6 +322,7 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
         char *end;
         char *token;
         bool closes_list = false;
+        bool in_quotes   = false;
 
         if (*cursor == ']') {
             cursor++;
@@ -331,14 +333,21 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
             return VANTAQ_CONFIG_STATUS_OK;
         }
 
-        end = strchr(cursor, ',');
-        if (end == NULL) {
-            end = strchr(cursor, ']');
-            if (end == NULL) {
-                loader_set_error(loader, "unterminated list for %s", field_name);
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        end = cursor;
+        while (*end != '\0') {
+            if (*end == '"') {
+                in_quotes = !in_quotes;
+            } else if (!in_quotes && *end == ',') {
+                break;
+            } else if (!in_quotes && *end == ']') {
+                closes_list = true;
+                break;
             }
-            closes_list = true;
+            end++;
+        }
+        if (*end == '\0') {
+            loader_set_error(loader, "unterminated list for %s", field_name);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
         *end  = '\0';
@@ -441,8 +450,9 @@ static enum vantaq_config_status parse_size_t(struct vantaq_config_loader *loade
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
+    errno  = 0;
     number = strtoull(local, &endptr, 10);
-    if (*endptr != '\0' || number == 0) {
+    if (errno == ERANGE || *endptr != '\0' || number == 0 || number > SIZE_MAX) {
         loader_set_error(loader, "invalid size for %s", field_name);
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
@@ -976,13 +986,17 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         if (line_len > 0 && line[line_len - 1] != '\n' && !feof(fp)) {
             loader_set_error(loader, "line exceeds maximum length of %d characters",
-                             VANTAQ_MAX_LINE_LEN - 1);
+                             VANTAQ_MAX_LINE_LEN - 2);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
         rtrim(line);
         if (is_blank_or_comment(line)) {
             continue;
+        }
+        if (line[0] == '\t') {
+            loader_set_error(loader, "tabs are not allowed for indentation");
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
         cursor = line;

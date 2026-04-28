@@ -3,6 +3,7 @@
 
 #include "infrastructure/crypto/evidence_signer.h"
 
+#include <limits.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -10,16 +11,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void secure_zero_memory(void *ptr, size_t size) {
+    volatile unsigned char *p = ptr;
+    while (size--) {
+        *p++ = 0;
+    }
+}
+
 vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key, const char *signature_alg,
                                          const char *payload, size_t payload_len,
                                          char **out_signature_b64) {
     if (!key || !signature_alg || !payload || !out_signature_b64) {
         return VANTAQ_SIGNER_ERR_INVALID_ARG;
     }
+    *out_signature_b64 = NULL;
+
+    ERR_clear_error();
 
     // Only support ECDSA-P256-SHA256 for now
     if (strcmp(signature_alg, "ECDSA-P256-SHA256") != 0) {
-        return VANTAQ_SIGNER_ERR_INVALID_ARG;
+        return VANTAQ_SIGNER_ERR_UNSUPPORTED_ALG;
     }
 
     vantaq_signer_err_t status = VANTAQ_SIGNER_ERR_SIGN_FAILED;
@@ -66,6 +77,9 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key, const c
     if (EVP_DigestSignFinal(ctx, NULL, &sig_len) <= 0) {
         goto cleanup;
     }
+    if (sig_len == 0) {
+        goto cleanup;
+    }
 
     sig = malloc(sig_len);
     if (!sig) {
@@ -79,17 +93,22 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key, const c
 
     // Base64 encode
     // The output length of EVP_EncodeBlock is 4 * ((sig_len + 2) / 3)
-    int b64_len = ((sig_len + 2) / 3) * 4;
-    b64_sig     = malloc(b64_len + 1);
+    if (sig_len > (size_t)INT_MAX) {
+        status = VANTAQ_SIGNER_ERR_BASE64_FAILED;
+        goto cleanup;
+    }
+    size_t b64_len = ((sig_len + 2U) / 3U) * 4U;
+    b64_sig        = malloc(b64_len + 1U);
     if (!b64_sig) {
         status = VANTAQ_SIGNER_ERR_MALLOC_FAILED;
         goto cleanup;
     }
 
-    if (EVP_EncodeBlock((unsigned char *)b64_sig, sig, sig_len) < 0) {
+    if (EVP_EncodeBlock((unsigned char *)b64_sig, sig, (int)sig_len) < 0) {
         status = VANTAQ_SIGNER_ERR_BASE64_FAILED;
         goto cleanup;
     }
+    b64_sig[b64_len] = '\0';
 
     *out_signature_b64 = b64_sig;
     status             = VANTAQ_SIGNER_OK;
@@ -101,16 +120,24 @@ cleanup:
         EVP_PKEY_free(pkey);
     if (bio)
         BIO_free(bio);
-    if (sig)
+    if (sig) {
+        secure_zero_memory(sig, sig_len);
         free(sig);
+    }
     if (status != VANTAQ_SIGNER_OK && b64_sig)
         free(b64_sig);
+    if (status != VANTAQ_SIGNER_OK) {
+        while (ERR_get_error() != 0) {
+        }
+    }
 
     return status;
 }
 
-void vantaq_signature_b64_free(char *signature_b64) {
+void vantaq_signature_b64_destroy(char *signature_b64) {
     if (signature_b64) {
         free(signature_b64);
     }
 }
+
+void vantaq_signature_b64_free(char *signature_b64) { vantaq_signature_b64_destroy(signature_b64); }

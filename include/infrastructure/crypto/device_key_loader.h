@@ -12,7 +12,9 @@ typedef enum {
     VANTAQ_KEY_ERR_MISSING_FILE = 2,
     VANTAQ_KEY_ERR_READ_FAILED = 3,
     VANTAQ_KEY_ERR_MALLOC_FAILED = 4,
-    VANTAQ_KEY_ERR_INVALID_FORMAT = 5
+    VANTAQ_KEY_ERR_INVALID_FORMAT = 5,
+    VANTAQ_KEY_ERR_FILE_TOO_LARGE = 6,
+    VANTAQ_KEY_ERR_PERMISSION_DENIED = 7
 } vantaq_key_err_t;
 
 typedef struct vantaq_device_key_t vantaq_device_key_t;

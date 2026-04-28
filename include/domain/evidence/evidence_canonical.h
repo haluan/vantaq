@@ -19,7 +19,12 @@ vantaq_evidence_err_t vantaq_evidence_serialize_canonical(const struct vantaq_ev
                                                           char **out_buffer, size_t *out_len);
 
 /**
- * @brief Free the buffer allocated by vantaq_evidence_serialize_canonical.
+ * @brief Destroy the buffer allocated by vantaq_evidence_serialize_canonical.
+ */
+void vantaq_evidence_canonical_destroy(char *buffer);
+
+/**
+ * @brief Backward-compatible alias for vantaq_evidence_canonical_destroy.
  */
 void vantaq_evidence_canonical_free(char *buffer);
 

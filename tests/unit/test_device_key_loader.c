@@ -100,11 +100,43 @@ static void test_key_load_missing_public(void **state) {
     s_assert_null(s, s->key);
 }
 
+static void test_key_load_invalid_format(void **state) {
+    struct DeviceKeyLoaderTestSuite *s = *state;
+    write_dummy_file(s->priv_path, "-----BEGIN PRIVATE KEY-----\nMALFORMED-WITHOUT-END\n");
+    write_dummy_file(s->pub_path,
+                     "-----BEGIN PUBLIC KEY-----\nMOCK_PUBLIC\n-----END PUBLIC KEY-----");
+
+    vantaq_key_err_t err = vantaq_device_key_load(s->priv_path, s->pub_path, &s->key);
+
+    s_assert_int_equal(s, err, VANTAQ_KEY_ERR_INVALID_FORMAT);
+    s_assert_null(s, s->key);
+}
+
+static void test_key_load_rejects_oversized_file(void **state) {
+    struct DeviceKeyLoaderTestSuite *s = *state;
+    FILE *f                            = fopen(s->priv_path, "wb");
+    s_assert_non_null(s, f);
+    for (size_t i = 0; i < (64U * 1024U) + 1U; ++i) {
+        fputc('A', f);
+    }
+    fclose(f);
+    write_dummy_file(s->pub_path,
+                     "-----BEGIN PUBLIC KEY-----\nMOCK_PUBLIC\n-----END PUBLIC KEY-----");
+
+    vantaq_key_err_t err = vantaq_device_key_load(s->priv_path, s->pub_path, &s->key);
+
+    s_assert_int_equal(s, err, VANTAQ_KEY_ERR_FILE_TOO_LARGE);
+    s_assert_null(s, s->key);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_key_load_success, suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_key_load_missing_private, suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_key_load_missing_public, suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_key_load_invalid_format, suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_key_load_rejects_oversized_file, suite_setup,
+                                        suite_teardown),
     };
 
     return cmocka_run_group_tests_name("device_key_loader_suite", tests, NULL, NULL);

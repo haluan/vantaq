@@ -26,6 +26,7 @@ typedef enum {
 struct vantaq_create_evidence_req {
     const char *challenge_id;
     const char *nonce;
+    const char *device_id;
     const char **claims;
     size_t claims_count;
 };

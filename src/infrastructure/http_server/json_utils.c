@@ -21,19 +21,39 @@ static const char *find_key(const char *json, const char *key) {
         return NULL;
     size_t key_len = strlen(key);
     const char *p  = json;
+    bool in_string = false;
+    bool escaped   = false;
 
-    while ((p = strstr(p, key)) != NULL) {
-        /* Check if it looks like a key: "key" or key: */
-        /* For robustness in this MVP, we look for "key" followed by : */
-        const char *start = p;
-        if (start > json && *(start - 1) == '\"') {
-            const char *end = start + key_len;
-            if (*end == '\"') {
+    while (*p) {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (*p == '\\') {
+                escaped = true;
+            } else if (*p == '"') {
+                in_string = false;
+            }
+            p++;
+            continue;
+        }
+
+        if (*p == '"') {
+            const char *start = p + 1;
+            const char *end   = start;
+            while (*end && *end != '"') {
+                end++;
+            }
+            if (!*end) {
+                return NULL;
+            }
+            if ((size_t)(end - start) == key_len && strncmp(start, key, key_len) == 0) {
                 const char *colon = skip_whitespace(end + 1);
                 if (colon && *colon == ':') {
                     return colon + 1;
                 }
             }
+            p = end + 1;
+            continue;
         }
         p++;
     }
@@ -52,8 +72,19 @@ bool vantaq_json_extract_str(const char *json, const char *key, char *out_buf, s
         return false;
     val_ptr++; /* Skip leading quote */
 
-    const char *end = strchr(val_ptr, '\"');
-    if (!end)
+    const char *end = val_ptr;
+    bool escaped    = false;
+    while (*end) {
+        if (escaped) {
+            escaped = false;
+        } else if (*end == '\\') {
+            escaped = true;
+        } else if (*end == '\"') {
+            break;
+        }
+        end++;
+    }
+    if (!*end)
         return false;
 
     size_t len = (size_t)(end - val_ptr);

@@ -21,17 +21,67 @@ struct vantaq_evidence {
     char signature[VANTAQ_SIGNATURE_MAX];
 };
 
+static void secure_zero_memory(void *ptr, size_t size) {
+    volatile unsigned char *p = ptr;
+    while (size--) {
+        *p++ = 0;
+    }
+}
+
+static vantaq_evidence_err_t validate_text_field(const char *value, size_t max_size) {
+    if (!value || strlen(value) == 0) {
+        return VANTAQ_EVIDENCE_ERR_MISSING_FIELD;
+    }
+    if (strlen(value) >= max_size) {
+        return VANTAQ_EVIDENCE_ERR_FIELD_TOO_LONG;
+    }
+    return VANTAQ_EVIDENCE_OK;
+}
+
 static vantaq_evidence_err_t validate_fields(const char *evidence_id, const char *device_id,
                                              const char *verifier_id, const char *challenge_id,
                                              const char *nonce, const char *purpose,
-                                             const char *claims, const char *signature_alg,
-                                             const char *signature) {
-    if (!evidence_id || strlen(evidence_id) == 0 || !device_id || strlen(device_id) == 0 ||
-        !verifier_id || strlen(verifier_id) == 0 || !challenge_id || strlen(challenge_id) == 0 ||
-        !nonce || strlen(nonce) == 0 || !purpose || strlen(purpose) == 0 || !claims ||
-        strlen(claims) == 0 || !signature_alg || strlen(signature_alg) == 0 || !signature ||
-        strlen(signature) == 0) {
-        return VANTAQ_EVIDENCE_ERR_MISSING_FIELD;
+                                             int64_t issued_at_unix, const char *claims,
+                                             const char *signature_alg, const char *signature) {
+    vantaq_evidence_err_t err = validate_text_field(evidence_id, VANTAQ_EVIDENCE_ID_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(device_id, VANTAQ_DEVICE_ID_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(verifier_id, VANTAQ_VERIFIER_ID_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(challenge_id, VANTAQ_CHALLENGE_ID_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(nonce, VANTAQ_NONCE_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(purpose, VANTAQ_PURPOSE_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(claims, VANTAQ_CLAIMS_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(signature_alg, VANTAQ_SIGNATURE_ALG_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+    err = validate_text_field(signature, VANTAQ_SIGNATURE_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+
+    if (issued_at_unix <= 0) {
+        return VANTAQ_EVIDENCE_ERR_INVALID_ARG;
     }
     return VANTAQ_EVIDENCE_OK;
 }
@@ -46,8 +96,9 @@ vantaq_evidence_err_t vantaq_evidence_create(const char *evidence_id, const char
         return VANTAQ_EVIDENCE_ERR_INVALID_ARG;
     }
 
-    vantaq_evidence_err_t err = validate_fields(evidence_id, device_id, verifier_id, challenge_id,
-                                                nonce, purpose, claims, signature_alg, signature);
+    vantaq_evidence_err_t err =
+        validate_fields(evidence_id, device_id, verifier_id, challenge_id, nonce, purpose,
+                        issued_at_unix, claims, signature_alg, signature);
     if (err != VANTAQ_EVIDENCE_OK) {
         return err;
     }
@@ -59,8 +110,6 @@ vantaq_evidence_err_t vantaq_evidence_create(const char *evidence_id, const char
 
     ER_ZERO_STRUCT(*ev);
 
-    // Using strncpy to ensure we don't overflow, though validation should have caught major issues
-    // and we know the sizes.
     strncpy(ev->evidence_id, evidence_id, VANTAQ_EVIDENCE_ID_MAX - 1);
     strncpy(ev->device_id, device_id, VANTAQ_DEVICE_ID_MAX - 1);
     strncpy(ev->verifier_id, verifier_id, VANTAQ_VERIFIER_ID_MAX - 1);
@@ -78,6 +127,7 @@ vantaq_evidence_err_t vantaq_evidence_create(const char *evidence_id, const char
 
 void vantaq_evidence_destroy(struct vantaq_evidence *evidence) {
     if (evidence) {
+        secure_zero_memory(evidence, sizeof(*evidence));
         free(evidence);
     }
 }
@@ -107,7 +157,7 @@ const char *vantaq_evidence_get_purpose(const struct vantaq_evidence *evidence) 
 }
 
 int64_t vantaq_evidence_get_issued_at_unix(const struct vantaq_evidence *evidence) {
-    return evidence ? evidence->issued_at_unix : 0;
+    return evidence ? evidence->issued_at_unix : -1;
 }
 
 const char *vantaq_evidence_get_claims(const struct vantaq_evidence *evidence) {

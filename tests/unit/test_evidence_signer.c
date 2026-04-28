@@ -140,14 +140,14 @@ static void test_sign_success_and_verify(void **state) {
     EVP_MD_CTX_free(vctx);
     EVP_PKEY_free(pub_pkey);
     free(sig_bin);
-    vantaq_signature_b64_free(sig_b64);
+    vantaq_signature_b64_destroy(sig_b64);
 }
 
 static void test_sign_invalid_alg(void **state) {
     struct EvidenceSignerTestSuite *s = *state;
     char *sig_b64                     = NULL;
     vantaq_signer_err_t err = vantaq_evidence_sign(s->key, "INVALID-ALG", "data", 4, &sig_b64);
-    s_assert_int_equal(s, err, VANTAQ_SIGNER_ERR_INVALID_ARG);
+    s_assert_int_equal(s, err, VANTAQ_SIGNER_ERR_UNSUPPORTED_ALG);
     s_assert_null(s, sig_b64);
 }
 

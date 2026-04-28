@@ -27,6 +27,11 @@ struct EvidenceDomainTestSuite {
 #define s_assert_true(s, a) assert_true(a)
 #define s_assert_false(s, a) assert_false(a)
 
+static void fill_buffer(char *buffer, size_t len, char fill_char) {
+    memset(buffer, fill_char, len);
+    buffer[len] = '\0';
+}
+
 static int suite_setup(void **state) {
     struct EvidenceDomainTestSuite *s = calloc(1, sizeof(struct EvidenceDomainTestSuite));
     if (!s)
@@ -91,12 +96,45 @@ static void test_evidence_creation_missing_fields(void **state) {
     s_assert_null(s, s->evidence);
 }
 
+static void test_evidence_creation_rejects_too_long_fields(void **state) {
+    struct EvidenceDomainTestSuite *s = *state;
+    char long_nonce[VANTAQ_NONCE_MAX + 8];
+    fill_buffer(long_nonce, VANTAQ_NONCE_MAX + 7, 'n');
+
+    vantaq_evidence_err_t err =
+        vantaq_evidence_create("ev", "dev", "ver", "ch", long_nonce, "purpose", 1234, "claims",
+                               "alg", "sig", &s->evidence);
+    s_assert_int_equal(s, err, VANTAQ_EVIDENCE_ERR_FIELD_TOO_LONG);
+    s_assert_null(s, s->evidence);
+}
+
+static void test_evidence_creation_rejects_non_positive_timestamp(void **state) {
+    struct EvidenceDomainTestSuite *s = *state;
+
+    vantaq_evidence_err_t err = vantaq_evidence_create("ev", "dev", "ver", "ch", "nonce", "purpose",
+                                                       0, "claims", "alg", "sig", &s->evidence);
+    s_assert_int_equal(s, err, VANTAQ_EVIDENCE_ERR_INVALID_ARG);
+    s_assert_null(s, s->evidence);
+}
+
+static void test_get_issued_at_unix_null_returns_negative_one(void **state) {
+    struct EvidenceDomainTestSuite *s = *state;
+    (void)s;
+    s_assert_int64_equal(s, vantaq_evidence_get_issued_at_unix(NULL), -1);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_evidence_creation_success, suite_setup,
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_evidence_creation_missing_fields, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_evidence_creation_rejects_too_long_fields, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_evidence_creation_rejects_non_positive_timestamp,
+                                        suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_get_issued_at_unix_null_returns_negative_one,
+                                        suite_setup, suite_teardown),
     };
 
     return cmocka_run_group_tests_name("evidence_domain_suite", tests, NULL, NULL);

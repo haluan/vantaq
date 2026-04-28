@@ -15,6 +15,7 @@
 #define s_assert_int_equal(suite, a, b) assert_int_equal(a, b)
 #define s_assert_non_null(suite, p) assert_non_null(p)
 #define s_assert_string_equal(suite, a, b) assert_string_equal(a, b)
+#define s_assert_null(suite, p) assert_null(p)
 
 struct LatestEvidenceSuite {
     struct vantaq_latest_evidence_store *store;
@@ -56,6 +57,7 @@ static void test_latest_evidence_store_put_get_success(void **state) {
     s_assert_non_null(s, out_ev);
     s_assert_string_equal(s, vantaq_evidence_get_evidence_id(out_ev), "ev-1");
     s_assert_string_equal(s, out_sig, "sig-1-b64");
+    s_assert_string_equal(s, vantaq_evidence_get_signature(out_ev), "sig-1");
 
     vantaq_evidence_destroy(evidence);
     vantaq_evidence_destroy(out_ev);
@@ -112,6 +114,29 @@ static void test_latest_evidence_store_full(void **state) {
     vantaq_evidence_destroy(ev);
 }
 
+static void test_latest_evidence_store_rejects_too_long_verifier_id(void **state) {
+    struct LatestEvidenceSuite *s  = *state;
+    struct vantaq_evidence *ev     = NULL;
+    struct vantaq_evidence *out_ev = NULL;
+    char *out_sig                  = NULL;
+    char long_verifier_id[VANTAQ_VERIFIER_ID_MAX + 16];
+
+    memset(long_verifier_id, 'a', sizeof(long_verifier_id) - 1);
+    long_verifier_id[sizeof(long_verifier_id) - 1] = '\0';
+
+    vantaq_evidence_create("ev", "dev", "verifier-1", "ch", "n", "t", 1, "{}", "a", "s", &ev);
+    vantaq_latest_evidence_err_t err =
+        vantaq_latest_evidence_store_put(s->store, long_verifier_id, ev, "s1");
+    s_assert_int_equal(s, err, VANTAQ_LATEST_EVIDENCE_ERR_VERIFIER_ID_TOO_LONG);
+
+    err = vantaq_latest_evidence_store_get(s->store, long_verifier_id, &out_ev, &out_sig);
+    s_assert_int_equal(s, err, VANTAQ_LATEST_EVIDENCE_ERR_NOT_FOUND);
+    s_assert_null(s, out_ev);
+    s_assert_null(s, out_sig);
+
+    vantaq_evidence_destroy(ev);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_latest_evidence_store_put_get_success, suite_setup,
@@ -122,6 +147,8 @@ int main(void) {
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_latest_evidence_store_full, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_latest_evidence_store_rejects_too_long_verifier_id,
+                                        suite_setup, suite_teardown),
     };
     return cmocka_run_group_tests_name("unit_latest_evidence_store", tests, NULL, NULL);
 }

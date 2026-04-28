@@ -24,6 +24,14 @@ static_assert(VANTAQ_CHALLENGE_JSON_BUF_SIZE > EXPECTED_MAX_JSON,
               "JSON buffer too small for maximum field sizes");
 
 #define VANTAQ_EVIDENCE_JSON_BUF_SIZE 4096
+/* evidence_id, device_id, verifier_id, challenge_id, nonce, purpose, signature_alg, signature,
+ * claims payload, timestamp and JSON punctuation */
+#define EXPECTED_MAX_EVIDENCE_JSON                                                                 \
+    (VANTAQ_EVIDENCE_ID_MAX + VANTAQ_DEVICE_ID_MAX + VANTAQ_VERIFIER_ID_MAX +                      \
+     VANTAQ_CHALLENGE_ID_MAX + VANTAQ_NONCE_MAX + VANTAQ_PURPOSE_MAX + VANTAQ_SIGNATURE_ALG_MAX +  \
+     VANTAQ_SIGNATURE_MAX + VANTAQ_CLAIMS_MAX + 256)
+static_assert(VANTAQ_EVIDENCE_JSON_BUF_SIZE > EXPECTED_MAX_EVIDENCE_JSON,
+              "Evidence JSON buffer too small for maximum field sizes");
 #define VANTAQ_MAX_CLAIMS_COUNT 16
 
 static void audit_challenge_creation(const struct vantaq_http_health_context *ctx,
@@ -110,7 +118,7 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     }
 
     /* Prevent spoofing of verifier_id from request body */
-    char spoofed_id[16];
+    char spoofed_id[VANTAQ_VERIFIER_ID_MAX];
     if (vantaq_json_extract_str(body_start, "verifier_id", spoofed_id, sizeof(spoofed_id))) {
         audit_challenge_creation(ctx, req_ctx, "denied", "spoofed_verifier_id");
         return vantaq_http_send_status_response(connection, 400);
@@ -195,15 +203,7 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     result = vantaq_http_write_all(connection, response, (size_t)strlen(response));
 
 cleanup:
-    /* Ensure challenge domain object is freed if we didn't successfully send it */
-    /* Note: if result == 0 (success), the challenge is in the store and valid.
-       Actually, vantaq_create_challenge already put it in the store.
-       If snprintf failed, we should probably remove it from the store to avoid leaking slots (S-4).
-     */
-    if (result != 0 && challenge != NULL) {
-        vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
-        /* The above destroy the challenge internally in the store implementation I wrote. */
-    }
+    (void)challenge;
     return result;
 }
 
@@ -220,8 +220,20 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
     char nonce[VANTAQ_NONCE_HEX_MAX];
     char json[VANTAQ_EVIDENCE_JSON_BUF_SIZE];
     char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
+    char error_json[512];
+    char error_response[1024];
+    char esc_ev_id[VANTAQ_EVIDENCE_ID_MAX * 2];
+    char esc_dev_id[VANTAQ_DEVICE_ID_MAX * 2];
+    char esc_ver_id[VANTAQ_VERIFIER_ID_MAX * 2];
+    char esc_ch_id[VANTAQ_CHALLENGE_ID_MAX * 2];
+    char esc_nonce[VANTAQ_NONCE_MAX * 2];
+    char esc_purpose[VANTAQ_PURPOSE_MAX * 2];
+    char esc_sig_alg[VANTAQ_SIGNATURE_ALG_MAX * 2];
+    char esc_sig[VANTAQ_SIGNATURE_MAX * 2];
     const char *body_start;
-    int result = -1;
+    int result         = -1;
+    int http_status    = 500;
+    const char *reason = "internal_error";
 
     VANTAQ_ZERO_STRUCT(req);
     VANTAQ_ZERO_STRUCT(res);
@@ -237,16 +249,13 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
 
     req.challenge_id = challenge_id;
     req.nonce        = nonce;
-    // Note: claims are hardcoded in the application service for now as per spec.
+    req.device_id    = ctx->device_id;
 
     vantaq_app_evidence_err_t app_err = vantaq_app_create_evidence(
         ctx->challenge_store, ctx->latest_evidence_store, ctx->device_key,
         req_ctx->verifier_auth.identity.id, &req, (int64_t)time(NULL), &res);
 
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
-        const char *reason = "internal_error";
-        int http_status    = 500;
-
         switch (app_err) {
         case VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_NOT_FOUND:
             reason      = "challenge_not_found";
@@ -257,19 +266,19 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED:
-            reason      = "CHALLENGE_ALREADY_USED";
+            reason      = "challenge_already_used";
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH:
-            reason      = "NONCE_MISMATCH";
+            reason      = "nonce_mismatch";
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH:
-            reason      = "VERIFIER_MISMATCH";
+            reason      = "verifier_mismatch";
             http_status = 403;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_SIGNING_FAILED:
-            reason      = "SIGNING_FAILED";
+            reason      = "signing_failed";
             http_status = 500;
             break;
         default:
@@ -278,14 +287,12 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
 
         audit_evidence_creation(ctx, req_ctx, "denied", reason);
 
-        /* Return JSON error response to meet integration test requirements */
-        char error_json[512];
-        char error_response[1024];
         int error_json_n = snprintf(error_json, sizeof(error_json),
                                     "{\"error\":{\"code\":\"%s\",\"request_id\":\"%s\"}}\n", reason,
                                     req_ctx->request_id);
         if (error_json_n <= 0 || (size_t)error_json_n >= sizeof(error_json)) {
-            return vantaq_http_send_status_response(connection, http_status);
+            result = vantaq_http_send_status_response(connection, http_status);
+            goto cleanup;
         }
 
         int error_resp_n = snprintf(error_response, sizeof(error_response),
@@ -299,37 +306,46 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                                     error_json_n, error_json);
 
         if (error_resp_n <= 0 || (size_t)error_resp_n >= sizeof(error_response)) {
-            return vantaq_http_send_status_response(connection, http_status);
+            result = vantaq_http_send_status_response(connection, http_status);
+            goto cleanup;
         }
 
-        return vantaq_http_write_all(connection, error_response, (size_t)error_resp_n);
+        result = vantaq_http_write_all(connection, error_response, (size_t)error_resp_n);
+        goto cleanup;
     }
 
     // Success - Construct JSON
-    char esc_ev_id[VANTAQ_MAX_FIELD_LEN * 2];
-    char esc_dev_id[VANTAQ_MAX_FIELD_LEN * 2];
+    if (vantaq_json_escape_str(vantaq_evidence_get_evidence_id(res.evidence), esc_ev_id,
+                               sizeof(esc_ev_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_device_id(res.evidence), esc_dev_id,
+                               sizeof(esc_dev_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_verifier_id(res.evidence), esc_ver_id,
+                               sizeof(esc_ver_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_challenge_id(res.evidence), esc_ch_id,
+                               sizeof(esc_ch_id)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_nonce(res.evidence), esc_nonce,
+                               sizeof(esc_nonce)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_purpose(res.evidence), esc_purpose,
+                               sizeof(esc_purpose)) == 0 ||
+        vantaq_json_escape_str(vantaq_evidence_get_signature_alg(res.evidence), esc_sig_alg,
+                               sizeof(esc_sig_alg)) == 0 ||
+        vantaq_json_escape_str(res.signature_b64, esc_sig, sizeof(esc_sig)) == 0) {
+        result = vantaq_http_send_status_response(connection, 500);
+        goto cleanup;
+    }
 
-    vantaq_json_escape_str(vantaq_evidence_get_evidence_id(res.evidence), esc_ev_id,
-                           sizeof(esc_ev_id));
-    vantaq_json_escape_str(vantaq_evidence_get_device_id(res.evidence), esc_dev_id,
-                           sizeof(esc_dev_id));
-
-    int n =
-        snprintf(json, sizeof(json),
-                 "{\"evidence_id\":\"%s\",\"device_id\":\"%s\",\"verifier_id\":\"%s\","
-                 "\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"purpose\":\"%s\","
-                 "\"timestamp\":%ld,\"claims\":%s,\"signature_algorithm\":\"%s\","
-                 "\"signature\":\"%s\"}\n",
-                 esc_ev_id, esc_dev_id, vantaq_evidence_get_verifier_id(res.evidence),
-                 vantaq_evidence_get_challenge_id(res.evidence),
-                 vantaq_evidence_get_nonce(res.evidence), vantaq_evidence_get_purpose(res.evidence),
-                 (long)vantaq_evidence_get_issued_at_unix(res.evidence),
-                 vantaq_evidence_get_claims(res.evidence),
-                 vantaq_evidence_get_signature_alg(res.evidence), res.signature_b64);
+    int n = snprintf(json, sizeof(json),
+                     "{\"evidence_id\":\"%s\",\"device_id\":\"%s\",\"verifier_id\":\"%s\","
+                     "\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"purpose\":\"%s\","
+                     "\"timestamp\":%ld,\"claims\":%s,\"signature_algorithm\":\"%s\","
+                     "\"signature\":\"%s\"}\n",
+                     esc_ev_id, esc_dev_id, esc_ver_id, esc_ch_id, esc_nonce, esc_purpose,
+                     (long)vantaq_evidence_get_issued_at_unix(res.evidence),
+                     vantaq_evidence_get_claims(res.evidence), esc_sig_alg, esc_sig);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
-        vantaq_create_evidence_res_free(&res);
-        return vantaq_http_send_status_response(connection, 500);
+        result = vantaq_http_send_status_response(connection, 500);
+        goto cleanup;
     }
 
     n = snprintf(response, sizeof(response),
@@ -342,13 +358,14 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                  (size_t)n, json);
 
     if (n < 0 || (size_t)n >= sizeof(response)) {
-        vantaq_create_evidence_res_free(&res);
-        return vantaq_http_send_status_response(connection, 500);
+        result = vantaq_http_send_status_response(connection, 500);
+        goto cleanup;
     }
 
     audit_evidence_creation(ctx, req_ctx, "allowed", "ok");
     result = vantaq_http_write_all(connection, response, (size_t)strlen(response));
 
+cleanup:
     vantaq_create_evidence_res_free(&res);
     return result;
 }
