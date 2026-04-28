@@ -150,6 +150,14 @@ if(VANTAQ_BUILD_TESTS)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
+  add_executable(test_replayed_challenge tests/integration/test_replayed_challenge.c tests/integration/test_cli_smoke.c)
+  target_compile_definitions(test_replayed_challenge PRIVATE DISABLE_TEST_MAIN)
+  target_link_libraries(test_replayed_challenge PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_replayed_challenge COMMAND test_replayed_challenge)
+  set_tests_properties(integration_replayed_challenge PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
   add_executable(test_evidence_domain tests/unit/test_evidence_domain.c)
   target_link_libraries(test_evidence_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_evidence_domain COMMAND test_evidence_domain)

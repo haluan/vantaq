@@ -257,19 +257,19 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED:
-            reason      = "challenge_used";
+            reason      = "CHALLENGE_ALREADY_USED";
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH:
-            reason      = "nonce_mismatch";
+            reason      = "NONCE_MISMATCH";
             http_status = 409;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH:
-            reason      = "verifier_mismatch";
+            reason      = "VERIFIER_MISMATCH";
             http_status = 403;
             break;
         case VANTAQ_APP_EVIDENCE_ERR_SIGNING_FAILED:
-            reason      = "signing_failed";
+            reason      = "SIGNING_FAILED";
             http_status = 500;
             break;
         default:
@@ -277,7 +277,32 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
         }
 
         audit_evidence_creation(ctx, req_ctx, "denied", reason);
-        return vantaq_http_send_status_response(connection, http_status);
+
+        /* Return JSON error response to meet integration test requirements */
+        char error_json[512];
+        char error_response[1024];
+        int error_json_n = snprintf(error_json, sizeof(error_json),
+                                    "{\"error\":{\"code\":\"%s\",\"request_id\":\"%s\"}}\n", reason,
+                                    req_ctx->request_id);
+        if (error_json_n <= 0 || (size_t)error_json_n >= sizeof(error_json)) {
+            return vantaq_http_send_status_response(connection, http_status);
+        }
+
+        int error_resp_n = snprintf(error_response, sizeof(error_response),
+                                    "HTTP/1.1 %d %s\r\n"
+                                    "Content-Type: application/json\r\n"
+                                    "Content-Length: %d\r\n"
+                                    "Connection: close\r\n"
+                                    "\r\n"
+                                    "%s",
+                                    http_status, (http_status == 409) ? "Conflict" : "Error",
+                                    error_json_n, error_json);
+
+        if (error_resp_n <= 0 || (size_t)error_resp_n >= sizeof(error_response)) {
+            return vantaq_http_send_status_response(connection, http_status);
+        }
+
+        return vantaq_http_write_all(connection, error_response, (size_t)error_resp_n);
     }
 
     // Success - Construct JSON
