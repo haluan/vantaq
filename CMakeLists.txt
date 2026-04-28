@@ -158,6 +158,14 @@ if(VANTAQ_BUILD_TESTS)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
+  add_executable(test_malformed_evidence_request tests/integration/test_malformed_evidence_request.c tests/integration/test_cli_smoke.c)
+  target_compile_definitions(test_malformed_evidence_request PRIVATE DISABLE_TEST_MAIN)
+  target_link_libraries(test_malformed_evidence_request PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_malformed_evidence_request COMMAND test_malformed_evidence_request)
+  set_tests_properties(integration_malformed_evidence_request PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
   add_executable(test_evidence_domain tests/unit/test_evidence_domain.c)
   target_link_libraries(test_evidence_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_evidence_domain COMMAND test_evidence_domain)
