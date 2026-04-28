@@ -93,6 +93,8 @@ static void test_startup_with_valid_config_succeeds(void **state) {
                             "  serial_number: SN-001\n"
                             "  manufacturer: ExampleCorp\n"
                             "  firmware_version: 0.1.0-demo\n"
+                            "  device_priv_key_path: /etc/hosts\n"
+                            "  device_pub_key_path: /etc/hosts\n"
                             "capabilities:\n"
                             "  supported_claims: [device_identity]\n"
                             "  signature_algorithms: []\n"

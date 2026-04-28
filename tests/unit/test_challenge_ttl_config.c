@@ -30,6 +30,8 @@
     "  serial_number: s1\n"                                                                        \
     "  manufacturer: m1\n"                                                                         \
     "  firmware_version: f1\n"                                                                     \
+    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_pub_key_path: /etc/hosts\n"                                                          \
     "capabilities:\n"                                                                              \
     "  supported_claims: [device_identity]\n"                                                      \
     "  signature_algorithms: [ES256]\n"                                                            \

@@ -596,6 +596,16 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         return 405;
     }
 
+    if (strcmp(path, "/v1/attestation/evidence") == 0) {
+        if (strcmp(method, "POST") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
+    }
+
     return 404;
 }
 
@@ -832,6 +842,8 @@ static void handle_client(struct vantaq_http_connection *connection,
             }
         } else if (status_code == 201 && strcmp(path, "/v1/attestation/challenge") == 0) {
             rc = send_post_challenge_response(connection, health_ctx, &request_ctx, req_buf);
+        } else if (status_code == 200 && strcmp(path, "/v1/attestation/evidence") == 0) {
+            rc = send_post_evidence_response(connection, health_ctx, &request_ctx, req_buf);
         } else {
             rc = send_health_response(connection, health_ctx);
         }
@@ -1053,6 +1065,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.dev_allow_all_networks     = options->dev_allow_all_networks;
     health_ctx.audit_log                  = audit_log;
     health_ctx.challenge_store            = options->challenge_store;
+    health_ctx.device_key                 = options->device_key;
     health_ctx.challenge_ttl_seconds      = options->challenge_ttl_seconds;
     health_ctx.err_logger                 = options->write_err;
     health_ctx.io_ctx                     = options->io_ctx;

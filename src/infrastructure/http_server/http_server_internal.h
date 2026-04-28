@@ -38,6 +38,7 @@ struct vantaq_http_health_context {
     bool dev_allow_all_networks;
     struct vantaq_audit_log *audit_log;
     struct vantaq_challenge_store *challenge_store;
+    const vantaq_device_key_t *device_key;
     size_t challenge_ttl_seconds;
     struct timespec started_at;
     vantaq_http_log_fn err_logger;
@@ -69,5 +70,10 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
                                  const struct vantaq_http_health_context *ctx,
                                  const struct vantaq_http_request_context *req_ctx,
                                  const char *request_body);
+
+int send_post_evidence_response(struct vantaq_http_connection *connection,
+                                const struct vantaq_http_health_context *ctx,
+                                const struct vantaq_http_request_context *req_ctx,
+                                const char *request_body);
 
 #endif

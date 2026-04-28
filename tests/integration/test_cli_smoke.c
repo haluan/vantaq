@@ -111,6 +111,8 @@ int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow
                            "  serial_number: SN-001\n"
                            "  manufacturer: ExampleCorp\n"
                            "  firmware_version: 0.1.0-demo\n"
+                           "  device_priv_key_path: /etc/hosts\n"
+                           "  device_pub_key_path: /etc/hosts\n"
                            "\n"
                            "capabilities:\n"
                            "  supported_claims:\n"

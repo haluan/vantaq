@@ -6,6 +6,7 @@
 #include "domain/version.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/crypto/device_key_loader.h"
 #include "infrastructure/http_server.h"
 #include "infrastructure/memory/challenge_store_memory.h"
 
@@ -41,6 +42,7 @@ struct vantaq_app_context {
     const struct vantaq_app_io *io;
     struct vantaq_config_loader *loader;
     struct vantaq_challenge_store *store;
+    vantaq_device_key_t *device_key;
     const char *config_path;
     bool config_path_set;
     const char *audit_log_path;
@@ -359,6 +361,19 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
         return false;
     }
 
+    /* Load device key */
+    {
+        const char *priv_path = vantaq_runtime_device_priv_key_path(config);
+        const char *pub_path  = vantaq_runtime_device_pub_key_path(config);
+        vantaq_key_err_t kerr = vantaq_device_key_load(priv_path, pub_path, &ctx->device_key);
+        if (kerr != VANTAQ_KEY_OK) {
+            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                               "config load failed: failed to load device key\n");
+            ctx->exit_code = 70;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -451,6 +466,7 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
         }
 
         server_options.challenge_store       = ctx.store;
+        server_options.device_key            = ctx.device_key;
         server_options.challenge_ttl_seconds = vantaq_runtime_challenge_ttl_seconds(config);
         server_options.write_out             = io->write_out;
         server_options.write_err             = io->write_err;
@@ -480,6 +496,9 @@ cleanup:
     }
     if (ctx.store != NULL) {
         vantaq_challenge_store_destroy(ctx.store);
+    }
+    if (ctx.device_key != NULL) {
+        vantaq_device_key_destroy(ctx.device_key);
     }
     if (ctx.loader != NULL) {
         vantaq_config_loader_destroy(ctx.loader);

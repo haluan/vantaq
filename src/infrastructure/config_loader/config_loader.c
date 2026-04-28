@@ -699,6 +699,26 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
         loader_set_error(loader, "missing required field %s", "device_identity.firmware_version");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
+    if (!config->has_device_priv_key_path) {
+        loader_set_error(loader, "missing required field %s",
+                         "device_identity.device_priv_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_device_pub_key_path) {
+        loader_set_error(loader, "missing required field %s",
+                         "device_identity.device_pub_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (access(config->device_priv_key_path, R_OK) != 0) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "device_identity.device_priv_key_path", config->device_priv_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (access(config->device_pub_key_path, R_OK) != 0) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "device_identity.device_pub_key_path", config->device_pub_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
     if (!config->has_supported_claims) {
         loader_set_error(loader, "missing required field %s", "capabilities.supported_claims");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
@@ -1281,6 +1301,25 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 }
                 continue;
             }
+            if (strcmp(key, "device_priv_key_path") == 0) {
+                rc = copy_string_to_field(loader, "device_identity.device_priv_key_path", value,
+                                          tmp->device_priv_key_path,
+                                          sizeof(tmp->device_priv_key_path),
+                                          &tmp->has_device_priv_key_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "device_pub_key_path") == 0) {
+                rc = copy_string_to_field(
+                    loader, "device_identity.device_pub_key_path", value, tmp->device_pub_key_path,
+                    sizeof(tmp->device_pub_key_path), &tmp->has_device_pub_key_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
 
             loader_set_error(loader, "unknown device_identity field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
@@ -1612,6 +1651,24 @@ const char *vantaq_runtime_device_firmware_version(const struct vantaq_runtime_c
         return "";
     }
     return config->firmware_version;
+}
+
+const char *vantaq_runtime_device_priv_key_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, device_priv_key_path) +
+                             sizeof(config->device_priv_key_path)) {
+        return "";
+    }
+    return config->device_priv_key_path;
+}
+
+const char *vantaq_runtime_device_pub_key_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, device_pub_key_path) +
+                             sizeof(config->device_pub_key_path)) {
+        return "";
+    }
+    return config->device_pub_key_path;
 }
 
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,

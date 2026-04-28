@@ -64,21 +64,27 @@
     "  model: edge-gateway-v1\n"                                                                   \
     "  serial_number: SN-001\n"                                                                    \
     "  manufacturer: ExampleCorp\n"                                                                \
-    "  firmware_version: 0.1.0-demo\n"
+    "  firmware_version: 0.1.0-demo\n"                                                             \
+    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_DEVICE_MISSING_ID                                                                     \
     "device_identity:\n"                                                                           \
     "  model: edge-gateway-v1\n"                                                                   \
     "  serial_number: SN-001\n"                                                                    \
     "  manufacturer: ExampleCorp\n"                                                                \
-    "  firmware_version: 0.1.0-demo\n"
+    "  firmware_version: 0.1.0-demo\n"                                                             \
+    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_DEVICE_MISSING_MANUFACTURER                                                           \
     "device_identity:\n"                                                                           \
     "  device_id: edge-gw-001\n"                                                                   \
     "  model: edge-gateway-v1\n"                                                                   \
     "  serial_number: SN-001\n"                                                                    \
-    "  firmware_version: 0.1.0-demo\n"
+    "  firmware_version: 0.1.0-demo\n"                                                             \
+    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_CAPABILITIES_VALID                                                                    \
     "capabilities:\n"                                                                              \
