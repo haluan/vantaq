@@ -50,22 +50,23 @@ static int suite_teardown(void **state) {
 
 static void test_serialization_determinism(void **state) {
     struct EvidenceCanonicalTestSuite *s = *state;
-    
+
     // Create evidence
-    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-1", "purpose-1", 1000, "{\"claims\":\"val\"}", "alg-1", "sig-1", &s->evidence);
+    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-1", "purpose-1", 1000,
+                           "{\"claims\":\"val\"}", "alg-1", "sig-1", &s->evidence);
     s_assert_non_null(s, s->evidence);
 
     // Serialize first time
-    char *buf1 = NULL;
-    size_t len1 = 0;
+    char *buf1                = NULL;
+    size_t len1               = 0;
     vantaq_evidence_err_t err = vantaq_evidence_serialize_canonical(s->evidence, &buf1, &len1);
     s_assert_int_equal(s, err, VANTAQ_EVIDENCE_OK);
     s_assert_non_null(s, buf1);
 
     // Serialize second time
-    char *buf2 = NULL;
+    char *buf2  = NULL;
     size_t len2 = 0;
-    err = vantaq_evidence_serialize_canonical(s->evidence, &buf2, &len2);
+    err         = vantaq_evidence_serialize_canonical(s->evidence, &buf2, &len2);
     s_assert_int_equal(s, err, VANTAQ_EVIDENCE_OK);
     s_assert_non_null(s, buf2);
 
@@ -79,22 +80,26 @@ static void test_serialization_determinism(void **state) {
 
 static void test_serialization_nonce_variation(void **state) {
     struct EvidenceCanonicalTestSuite *s = *state;
-    
+
     struct vantaq_evidence *ev1 = NULL;
     struct vantaq_evidence *ev2 = NULL;
-    
-    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-A", "purpose-1", 1000, "{}", "alg-1", "sig-1", &ev1);
-    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-B", "purpose-1", 1000, "{}", "alg-1", "sig-1", &ev2);
-    
-    char *buf1 = NULL; size_t len1 = 0;
-    char *buf2 = NULL; size_t len2 = 0;
-    
+
+    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-A", "purpose-1", 1000, "{}",
+                           "alg-1", "sig-1", &ev1);
+    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-B", "purpose-1", 1000, "{}",
+                           "alg-1", "sig-1", &ev2);
+
+    char *buf1  = NULL;
+    size_t len1 = 0;
+    char *buf2  = NULL;
+    size_t len2 = 0;
+
     vantaq_evidence_serialize_canonical(ev1, &buf1, &len1);
     vantaq_evidence_serialize_canonical(ev2, &buf2, &len2);
-    
+
     // Must be different
     s_assert_false(s, (len1 == len2 && strcmp(buf1, buf2) == 0));
-    
+
     vantaq_evidence_canonical_free(buf1);
     vantaq_evidence_canonical_free(buf2);
     vantaq_evidence_destroy(ev1);
@@ -103,25 +108,29 @@ static void test_serialization_nonce_variation(void **state) {
 
 static void test_serialization_signature_exclusion(void **state) {
     struct EvidenceCanonicalTestSuite *s = *state;
-    const char *sig_val = "SECRET_SIGNATURE_VALUE";
-    
-    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-1", "purpose-1", 1000, "{}", "alg-1", sig_val, &s->evidence);
-    
-    char *buf = NULL;
+    const char *sig_val                  = "SECRET_SIGNATURE_VALUE";
+
+    vantaq_evidence_create("ev-1", "dev-1", "ver-1", "ch-1", "nonce-1", "purpose-1", 1000, "{}",
+                           "alg-1", sig_val, &s->evidence);
+
+    char *buf  = NULL;
     size_t len = 0;
     vantaq_evidence_serialize_canonical(s->evidence, &buf, &len);
-    
+
     // Serialized output must NOT contain the signature value
     s_assert_null(s, strstr(buf, sig_val));
-    
+
     vantaq_evidence_canonical_free(buf);
 }
 
 int main(void) {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test_setup_teardown(test_serialization_determinism, suite_setup, suite_teardown),
-        cmocka_unit_test_setup_teardown(test_serialization_nonce_variation, suite_setup, suite_teardown),
-        cmocka_unit_test_setup_teardown(test_serialization_signature_exclusion, suite_setup, suite_teardown),
+        cmocka_unit_test_setup_teardown(test_serialization_determinism, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_serialization_nonce_variation, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_serialization_signature_exclusion, suite_setup,
+                                        suite_teardown),
     };
 
     return cmocka_run_group_tests_name("evidence_canonical_suite", tests, NULL, NULL);
