@@ -33,6 +33,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/http_server/json_utils.c
   src/domain/evidence/evidence.c
   src/domain/evidence/evidence_canonical.c
+  src/domain/measurement/measurement.c
   src/infrastructure/crypto/device_key_loader.c
   src/infrastructure/crypto/evidence_signer.c
 )
@@ -189,6 +190,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_latest_evidence_store tests/unit/test_latest_evidence_store.c)
   target_link_libraries(test_latest_evidence_store PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_latest_evidence_store COMMAND test_latest_evidence_store)
+
+  add_executable(test_measurement_domain tests/unit/test_measurement_domain.c)
+  target_link_libraries(test_measurement_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_measurement_domain COMMAND test_measurement_domain)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)
