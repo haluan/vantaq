@@ -10,10 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
-                                         const char *signature_alg,
-                                         const char *payload,
-                                         size_t payload_len,
+vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key, const char *signature_alg,
+                                         const char *payload, size_t payload_len,
                                          char **out_signature_b64) {
     if (!key || !signature_alg || !payload || !out_signature_b64) {
         return VANTAQ_SIGNER_ERR_INVALID_ARG;
@@ -25,12 +23,12 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
     }
 
     vantaq_signer_err_t status = VANTAQ_SIGNER_ERR_SIGN_FAILED;
-    EVP_PKEY *pkey = NULL;
-    BIO *bio = NULL;
-    EVP_MD_CTX *ctx = NULL;
-    unsigned char *sig = NULL;
-    size_t sig_len = 0;
-    char *b64_sig = NULL;
+    EVP_PKEY *pkey             = NULL;
+    BIO *bio                   = NULL;
+    EVP_MD_CTX *ctx            = NULL;
+    unsigned char *sig         = NULL;
+    size_t sig_len             = 0;
+    char *b64_sig              = NULL;
 
     const char *priv_pem = vantaq_device_key_get_private_pem(key);
     if (!priv_pem) {
@@ -82,7 +80,7 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
     // Base64 encode
     // The output length of EVP_EncodeBlock is 4 * ((sig_len + 2) / 3)
     int b64_len = ((sig_len + 2) / 3) * 4;
-    b64_sig = malloc(b64_len + 1);
+    b64_sig     = malloc(b64_len + 1);
     if (!b64_sig) {
         status = VANTAQ_SIGNER_ERR_MALLOC_FAILED;
         goto cleanup;
@@ -94,14 +92,19 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
     }
 
     *out_signature_b64 = b64_sig;
-    status = VANTAQ_SIGNER_OK;
+    status             = VANTAQ_SIGNER_OK;
 
 cleanup:
-    if (ctx) EVP_MD_CTX_free(ctx);
-    if (pkey) EVP_PKEY_free(pkey);
-    if (bio) BIO_free(bio);
-    if (sig) free(sig);
-    if (status != VANTAQ_SIGNER_OK && b64_sig) free(b64_sig);
+    if (ctx)
+        EVP_MD_CTX_free(ctx);
+    if (pkey)
+        EVP_PKEY_free(pkey);
+    if (bio)
+        BIO_free(bio);
+    if (sig)
+        free(sig);
+    if (status != VANTAQ_SIGNER_OK && b64_sig)
+        free(b64_sig);
 
     return status;
 }
