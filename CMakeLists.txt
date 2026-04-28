@@ -30,6 +30,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/http_server/routes_attestation.c
   src/infrastructure/http_server/json_utils.c
   src/domain/evidence/evidence.c
+  src/infrastructure/crypto/device_key_loader.c
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
@@ -140,4 +141,8 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_evidence_domain tests/unit/test_evidence_domain.c)
   target_link_libraries(test_evidence_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_evidence_domain COMMAND test_evidence_domain)
+
+  add_executable(test_device_key_loader tests/unit/test_device_key_loader.c)
+  target_link_libraries(test_device_key_loader PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_device_key_loader COMMAND test_device_key_loader)
 endif()
