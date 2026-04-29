@@ -34,6 +34,7 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/evidence/evidence.c
   src/domain/evidence/evidence_canonical.c
   src/domain/measurement/measurement.c
+  src/domain/measurement/supported_claims.c
   src/infrastructure/linux_measurement/firmware_hash.c
   src/infrastructure/linux_measurement/config_hash.c
   src/infrastructure/linux_measurement/agent_integrity.c
@@ -180,6 +181,13 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_evidence_boot_state_claim PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_evidence_boot_state_claim COMMAND test_evidence_boot_state_claim)
   set_tests_properties(integration_evidence_boot_state_claim PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
+  add_executable(test_claim_selector_validation tests/integration/test_claim_selector_validation.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_link_libraries(test_claim_selector_validation PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_claim_selector_validation COMMAND test_claim_selector_validation)
+  set_tests_properties(integration_claim_selector_validation PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 

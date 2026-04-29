@@ -3,6 +3,7 @@
 
 #include "application/evidence/create_evidence.h"
 #include "domain/evidence/evidence_canonical.h"
+#include "domain/measurement/supported_claims.h"
 #include "infrastructure/crypto/evidence_signer.h"
 #include "infrastructure/linux_measurement/agent_integrity.h"
 #include "infrastructure/linux_measurement/boot_state.h"
@@ -82,12 +83,6 @@ cleanup:
     return ok;
 }
 
-static bool is_known_claim(const char *claim) {
-    return strcmp(claim, CLAIM_DEVICE_IDENTITY) == 0 || strcmp(claim, CLAIM_FIRMWARE_HASH) == 0 ||
-           strcmp(claim, CLAIM_CONFIG_HASH) == 0 || strcmp(claim, CLAIM_AGENT_INTEGRITY) == 0 ||
-           strcmp(claim, CLAIM_BOOT_STATE) == 0;
-}
-
 static bool is_claim_allowed(const struct vantaq_runtime_config *runtime_config,
                              const char *claim) {
     size_t count;
@@ -132,7 +127,7 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
             }
         }
 
-        if (!is_known_claim(claim)) {
+        if (!vantaq_supported_claim_is_known(claim)) {
             return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
         }
         if (!is_claim_allowed(runtime_config, claim)) {
