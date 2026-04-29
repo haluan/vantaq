@@ -8,7 +8,11 @@
 #include "domain/attestation_challenge/challenge_store.h"
 #include "domain/evidence/evidence.h"
 #include "infrastructure/crypto/device_key_loader.h"
+#include "infrastructure/config_loader.h"
+
 #include <stdint.h>
+
+#define VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST 8
 
 typedef enum {
     VANTAQ_APP_EVIDENCE_OK = 0,
@@ -20,7 +24,13 @@ typedef enum {
     VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH = 6,
     VANTAQ_APP_EVIDENCE_ERR_SIGNING_FAILED = 7,
     VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED = 8,
-    VANTAQ_APP_EVIDENCE_ERR_INTERNAL = 9
+    VANTAQ_APP_EVIDENCE_ERR_INTERNAL = 9,
+    VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS = 10,
+    VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM = 11,
+    VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED = 12,
+    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND = 13,
+    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED = 14,
+    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED = 15
 } vantaq_app_evidence_err_t;
 
 struct vantaq_create_evidence_req {
@@ -42,6 +52,7 @@ struct vantaq_create_evidence_res {
 vantaq_app_evidence_err_t vantaq_app_create_evidence(
     struct vantaq_challenge_store *store,
     struct vantaq_latest_evidence_store *latest_store,
+    const struct vantaq_runtime_config *runtime_config,
     const vantaq_device_key_t *device_key,
     const char *verifier_id,
     const struct vantaq_create_evidence_req *req,

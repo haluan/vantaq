@@ -43,4 +43,23 @@ bool vantaq_json_extract_long(const char *json, const char *key, long *out_val);
  */
 size_t vantaq_json_escape_str(const char *src, char *dst, size_t dst_size);
 
+/**
+ * @brief Extract an optional JSON string-array field.
+ *
+ * If the key is absent, returns true and sets `*out_present = false`.
+ * If the key exists, the value must be a JSON array of strings.
+ *
+ * @param json JSON payload.
+ * @param key Field key.
+ * @param out_items Flat output buffer for items (`max_items * item_size`).
+ * @param item_size Per-item slot size.
+ * @param max_items Maximum items accepted.
+ * @param out_count Parsed item count.
+ * @param out_present Whether the key exists in input JSON.
+ * @return true on success; false on malformed JSON, overflow, or invalid args.
+ */
+bool vantaq_json_extract_str_array(const char *json, const char *key, char *out_items,
+                                   size_t item_size, size_t max_items, size_t *out_count,
+                                   bool *out_present);
+
 #endif

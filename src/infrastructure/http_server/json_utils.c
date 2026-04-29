@@ -172,3 +172,96 @@ size_t vantaq_json_escape_str(const char *src, char *dst, size_t dst_size) {
     dst[written] = '\0';
     return written;
 }
+
+bool vantaq_json_extract_str_array(const char *json, const char *key, char *out_items,
+                                   size_t item_size, size_t max_items, size_t *out_count,
+                                   bool *out_present) {
+    const char *val_ptr;
+    size_t count = 0;
+
+    if (out_count == NULL || out_present == NULL || out_items == NULL || item_size == 0 ||
+        max_items == 0) {
+        return false;
+    }
+
+    *out_count   = 0;
+    *out_present = false;
+    val_ptr      = find_key(json, key);
+    if (val_ptr == NULL) {
+        return true;
+    }
+
+    *out_present = true;
+    val_ptr      = skip_whitespace(val_ptr);
+    if (val_ptr == NULL || *val_ptr != '[') {
+        return false;
+    }
+    val_ptr++;
+
+    while (true) {
+        char *dst;
+        size_t written = 0;
+        bool escaped   = false;
+
+        val_ptr = skip_whitespace(val_ptr);
+        if (val_ptr == NULL) {
+            return false;
+        }
+
+        if (*val_ptr == ']') {
+            *out_count = count;
+            return true;
+        }
+
+        if (*val_ptr != '"') {
+            return false;
+        }
+        if (count >= max_items) {
+            return false;
+        }
+
+        dst = out_items + (count * item_size);
+        val_ptr++;
+        while (*val_ptr != '\0') {
+            if (!escaped && *val_ptr == '"') {
+                break;
+            }
+            if (!escaped && *val_ptr == '\\') {
+                escaped = true;
+                val_ptr++;
+                continue;
+            }
+
+            if (written + 1 >= item_size) {
+                return false;
+            }
+            dst[written++] = *val_ptr;
+            escaped        = false;
+            val_ptr++;
+        }
+
+        if (*val_ptr != '"') {
+            return false;
+        }
+        if (written == 0) {
+            return false;
+        }
+        dst[written] = '\0';
+        count++;
+        val_ptr++;
+
+        val_ptr = skip_whitespace(val_ptr);
+        if (val_ptr == NULL) {
+            return false;
+        }
+        if (*val_ptr == ',') {
+            val_ptr++;
+            continue;
+        }
+        if (*val_ptr == ']') {
+            *out_count = count;
+            return true;
+        }
+        return false;
+    }
+}

@@ -3,16 +3,20 @@
 
 #include "application/attestation_challenge/create_challenge.h"
 #include "application/evidence/create_evidence.h"
+#include "infrastructure/config_loader.h"
 #include "infrastructure/crypto/device_key_loader.h"
 #include "infrastructure/memory/challenge_store_memory.h"
+#include "infrastructure/memory/zero_struct.h"
 
 #include <setjmp.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <cmocka.h>
 
@@ -24,6 +28,7 @@ struct CreateEvidenceTestSuite {
     struct vantaq_challenge_store *store;
     struct vantaq_latest_evidence_store *latest_store;
     vantaq_device_key_t *device_key;
+    struct vantaq_runtime_config runtime_config;
     int64_t current_time;
 };
 
@@ -44,6 +49,16 @@ static void remove_test_keys() {
     (void)remove(TEST_PUB_KEY);
 }
 
+static void set_supported_claims(struct vantaq_runtime_config *config, bool include_firmware_hash) {
+    config->supported_claims.count    = 0;
+    config->supported_claims.items[0] = (char *)"device_identity";
+    config->supported_claims.count    = 1;
+    if (include_firmware_hash) {
+        config->supported_claims.items[1] = (char *)"firmware_hash";
+        config->supported_claims.count    = 2;
+    }
+}
+
 static int suite_setup(void **state) {
     create_test_keys();
     struct CreateEvidenceTestSuite *s = malloc(sizeof(struct CreateEvidenceTestSuite));
@@ -54,6 +69,14 @@ static int suite_setup(void **state) {
     s->latest_store = vantaq_latest_evidence_store_create(5);
     s->device_key   = NULL;
     vantaq_device_key_load(TEST_PRIV_KEY, TEST_PUB_KEY, &s->device_key);
+    VANTAQ_ZERO_STRUCT(s->runtime_config);
+    s->runtime_config.cbSize = sizeof(s->runtime_config);
+    strncpy(s->runtime_config.model, "edge-gateway-v1", sizeof(s->runtime_config.model) - 1);
+    strncpy(s->runtime_config.serial_number, "SN-001", sizeof(s->runtime_config.serial_number) - 1);
+    strncpy(s->runtime_config.measurement_firmware_path, "/tmp/vantaq_missing_firmware.bin",
+            sizeof(s->runtime_config.measurement_firmware_path) - 1);
+    s->runtime_config.measurement_max_file_bytes = 1024;
+    set_supported_claims(&s->runtime_config, false);
     s->current_time = (int64_t)time(NULL);
 
     *state = s;
@@ -91,8 +114,9 @@ static void test_create_evidence_success(void **state) {
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_OK);
     s_assert_non_null(s, res.evidence);
@@ -114,8 +138,9 @@ static void test_create_evidence_challenge_not_found(void **state) {
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_NOT_FOUND);
 }
@@ -134,8 +159,9 @@ static void test_create_evidence_nonce_mismatch(void **state) {
     struct vantaq_create_evidence_res res;
     memset(&res, 0, sizeof(res));
 
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-1", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH);
 }
@@ -157,8 +183,9 @@ static void test_create_evidence_challenge_expired(void **state) {
     memset(&res, 0, sizeof(res));
 
     // Request 10 seconds later
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time + 10, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-1", &req, s->current_time + 10, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_EXPIRED);
 }
@@ -179,8 +206,9 @@ static void test_create_evidence_verifier_mismatch(void **state) {
     memset(&res, 0, sizeof(res));
 
     // Request from verifier-2 instead of verifier-1
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-2", &req, s->current_time, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-2", &req, s->current_time, &res);
 
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH);
 }
@@ -202,16 +230,105 @@ static void test_create_evidence_used_challenge(void **state) {
     memset(&res, 0, sizeof(res));
 
     // First use should succeed
-    vantaq_app_evidence_err_t err = vantaq_app_create_evidence(
-        s->store, s->latest_store, s->device_key, "verifier-1", &req, s->current_time, &res);
+    vantaq_app_evidence_err_t err =
+        vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                   "verifier-1", &req, s->current_time, &res);
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_OK);
     vantaq_create_evidence_res_free(&res);
 
     // Second use should fail with CHALLENGE_USED
     memset(&res, 0, sizeof(res));
-    err = vantaq_app_create_evidence(s->store, s->latest_store, s->device_key, "verifier-1", &req,
-                                     s->current_time, &res);
+    err = vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                     "verifier-1", &req, s->current_time, &res);
     s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED);
+}
+
+static void test_create_evidence_unsupported_claim(void **state) {
+    struct CreateEvidenceTestSuite *s  = *state;
+    struct vantaq_challenge *challenge = NULL;
+    const char *claims[]               = {"not_a_claim"};
+    struct vantaq_create_evidence_res res;
+    struct vantaq_create_evidence_req req;
+    vantaq_app_evidence_err_t err;
+
+    vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
+    req.challenge_id = vantaq_challenge_get_id(challenge);
+    req.nonce        = vantaq_challenge_get_nonce_hex(challenge);
+    req.device_id    = "test-device-1";
+    req.claims       = claims;
+    req.claims_count = 1;
+    memset(&res, 0, sizeof(res));
+
+    err = vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                     "verifier-1", &req, s->current_time, &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM);
+}
+
+static void test_create_evidence_claim_not_allowed(void **state) {
+    struct CreateEvidenceTestSuite *s  = *state;
+    struct vantaq_challenge *challenge = NULL;
+    const char *claims[]               = {"firmware_hash"};
+    struct vantaq_create_evidence_res res;
+    struct vantaq_create_evidence_req req;
+    vantaq_app_evidence_err_t err;
+
+    set_supported_claims(&s->runtime_config, false);
+    vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
+    req.challenge_id = vantaq_challenge_get_id(challenge);
+    req.nonce        = vantaq_challenge_get_nonce_hex(challenge);
+    req.device_id    = "test-device-1";
+    req.claims       = claims;
+    req.claims_count = 1;
+    memset(&res, 0, sizeof(res));
+
+    err = vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                     "verifier-1", &req, s->current_time, &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED);
+}
+
+static void test_create_evidence_duplicate_claims_invalid(void **state) {
+    struct CreateEvidenceTestSuite *s  = *state;
+    struct vantaq_challenge *challenge = NULL;
+    const char *claims[]               = {"firmware_hash", "firmware_hash"};
+    struct vantaq_create_evidence_res res;
+    struct vantaq_create_evidence_req req;
+    vantaq_app_evidence_err_t err;
+
+    set_supported_claims(&s->runtime_config, true);
+    vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
+    req.challenge_id = vantaq_challenge_get_id(challenge);
+    req.nonce        = vantaq_challenge_get_nonce_hex(challenge);
+    req.device_id    = "test-device-1";
+    req.claims       = claims;
+    req.claims_count = 2;
+    memset(&res, 0, sizeof(res));
+
+    err = vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                     "verifier-1", &req, s->current_time, &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS);
+}
+
+static void test_create_evidence_firmware_source_not_found(void **state) {
+    struct CreateEvidenceTestSuite *s  = *state;
+    struct vantaq_challenge *challenge = NULL;
+    const char *claims[]               = {"firmware_hash"};
+    struct vantaq_create_evidence_res res;
+    struct vantaq_create_evidence_req req;
+    vantaq_app_evidence_err_t err;
+
+    unlink("/tmp/vantaq_missing_firmware.bin");
+    set_supported_claims(&s->runtime_config, true);
+    vantaq_create_challenge(s->store, "verifier-1", "test", 60, &challenge);
+    req.challenge_id = vantaq_challenge_get_id(challenge);
+    req.nonce        = vantaq_challenge_get_nonce_hex(challenge);
+    req.device_id    = "test-device-1";
+    req.claims       = claims;
+    req.claims_count = 1;
+    memset(&res, 0, sizeof(res));
+
+    err = vantaq_app_create_evidence(s->store, s->latest_store, &s->runtime_config, s->device_key,
+                                     "verifier-1", &req, s->current_time, &res);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND);
 }
 
 int main(void) {
@@ -226,6 +343,14 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_create_evidence_verifier_mismatch, suite_setup,
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_create_evidence_used_challenge, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_create_evidence_unsupported_claim, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_create_evidence_claim_not_allowed, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_create_evidence_duplicate_claims_invalid, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_create_evidence_firmware_source_not_found, suite_setup,
                                         suite_teardown),
     };
     return cmocka_run_group_tests_name("unit_create_evidence_validation", tests, NULL, NULL);

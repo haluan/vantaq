@@ -4,6 +4,7 @@
 #include "application/evidence/create_evidence.h"
 #include "domain/evidence/evidence_canonical.h"
 #include "infrastructure/crypto/evidence_signer.h"
+#include "infrastructure/linux_measurement/firmware_hash.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,83 +12,188 @@
 #include <time.h>
 
 #define SIGNATURE_ALG "ECDSA-P256-SHA256"
+#define CLAIM_DEVICE_IDENTITY "device_identity"
+#define CLAIM_FIRMWARE_HASH "firmware_hash"
+#define CLAIM_CONFIG_HASH "config_hash"
+#define CLAIM_AGENT_INTEGRITY "agent_integrity"
+#define CLAIM_BOOT_STATE "boot_state"
 
-static size_t escaped_json_len(const char *s) {
-    size_t n = 0;
-    for (; *s; ++s) {
-        if (*s == '"' || *s == '\\') {
-            n += 2;
-        } else {
-            n += 1;
-        }
-    }
-    return n;
+static bool is_known_claim(const char *claim) {
+    return strcmp(claim, CLAIM_DEVICE_IDENTITY) == 0 || strcmp(claim, CLAIM_FIRMWARE_HASH) == 0 ||
+           strcmp(claim, CLAIM_CONFIG_HASH) == 0 || strcmp(claim, CLAIM_AGENT_INTEGRITY) == 0 ||
+           strcmp(claim, CLAIM_BOOT_STATE) == 0;
 }
 
-static void append_escaped_json(char *dst, size_t *offset, const char *s) {
-    while (*s) {
-        if (*s == '"' || *s == '\\') {
-            dst[(*offset)++] = '\\';
+static bool is_claim_allowed(const struct vantaq_runtime_config *runtime_config,
+                             const char *claim) {
+    size_t count;
+    size_t i;
+
+    count = vantaq_runtime_capability_count(runtime_config, VANTAQ_CAPABILITY_SUPPORTED_CLAIMS);
+    for (i = 0; i < count; i++) {
+        const char *allowed =
+            vantaq_runtime_capability_item(runtime_config, VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, i);
+        if (allowed != NULL && strcmp(allowed, claim) == 0) {
+            return true;
         }
-        dst[(*offset)++] = *s++;
     }
+    return false;
 }
 
-static vantaq_app_evidence_err_t build_claims_json(const struct vantaq_create_evidence_req *req,
-                                                   char **out_claims_json) {
-    if (!req || !out_claims_json) {
-        return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+static vantaq_app_evidence_err_t
+validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
+                          const struct vantaq_create_evidence_req *req) {
+    size_t i;
+    size_t j;
+
+    if (req->claims_count > VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST) {
+        return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
-    if (req->claims_count == 0) {
-        *out_claims_json = strdup("{}");
-        return *out_claims_json ? VANTAQ_APP_EVIDENCE_OK : VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
-    }
-    if (!req->claims) {
-        return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+    if (req->claims_count > 0 && req->claims == NULL) {
+        return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
 
-    size_t total = strlen("{\"claims\":[") + strlen("]}") + 1;
-    for (size_t i = 0; i < req->claims_count; ++i) {
-        if (!req->claims[i]) {
-            return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+    for (i = 0; i < req->claims_count; i++) {
+        const char *claim = req->claims[i];
+        if (claim == NULL || claim[0] == '\0') {
+            return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
         }
-        total += 2 + escaped_json_len(req->claims[i]); // surrounding quotes + escaped content
-        if (i + 1 < req->claims_count) {
-            total += 1; // comma
+
+        for (j = i + 1; j < req->claims_count; j++) {
+            if (req->claims[j] == NULL || req->claims[j][0] == '\0') {
+                return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
+            }
+            if (strcmp(claim, req->claims[j]) == 0) {
+                return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
+            }
+        }
+
+        if (!is_known_claim(claim)) {
+            return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
+        }
+        if (!is_claim_allowed(runtime_config, claim)) {
+            return VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED;
+        }
+
+        if (strcmp(claim, CLAIM_CONFIG_HASH) == 0 || strcmp(claim, CLAIM_AGENT_INTEGRITY) == 0 ||
+            strcmp(claim, CLAIM_BOOT_STATE) == 0) {
+            return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
         }
     }
 
-    char *json = malloc(total);
-    if (!json) {
-        return VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
-    }
-
-    size_t off = 0;
-    memcpy(json + off, "{\"claims\":[", strlen("{\"claims\":["));
-    off += strlen("{\"claims\":[");
-    for (size_t i = 0; i < req->claims_count; ++i) {
-        json[off++] = '"';
-        append_escaped_json(json, &off, req->claims[i]);
-        json[off++] = '"';
-        if (i + 1 < req->claims_count) {
-            json[off++] = ',';
-        }
-    }
-    json[off++] = ']';
-    json[off++] = '}';
-    json[off]   = '\0';
-
-    *out_claims_json = json;
     return VANTAQ_APP_EVIDENCE_OK;
 }
 
-vantaq_app_evidence_err_t
-vantaq_app_create_evidence(struct vantaq_challenge_store *store,
-                           struct vantaq_latest_evidence_store *latest_store,
-                           const vantaq_device_key_t *device_key, const char *verifier_id,
-                           const struct vantaq_create_evidence_req *req, int64_t current_time_unix,
-                           struct vantaq_create_evidence_res *out_res) {
-    if (!store || !device_key || !verifier_id || !req || !out_res) {
+static vantaq_app_evidence_err_t
+build_claims_json(const struct vantaq_runtime_config *runtime_config,
+                  const struct vantaq_create_evidence_req *req, char **out_claims_json) {
+    vantaq_app_evidence_err_t app_err                    = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
+    struct vantaq_measurement_result *measurement_result = NULL;
+    enum vantaq_firmware_hash_status measurement_status;
+    const char *firmware_value = NULL;
+    const char *model;
+    const char *serial_number;
+    bool include_device_identity = false;
+    bool include_firmware_hash   = false;
+    bool first                   = true;
+    size_t i;
+    int n;
+    size_t used = 0;
+    char claims_buf[VANTAQ_CLAIMS_MAX];
+
+    if (runtime_config == NULL || req == NULL || out_claims_json == NULL) {
+        return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+    }
+    *out_claims_json = NULL;
+
+    for (i = 0; i < req->claims_count; i++) {
+        if (strcmp(req->claims[i], CLAIM_DEVICE_IDENTITY) == 0) {
+            include_device_identity = true;
+        } else if (strcmp(req->claims[i], CLAIM_FIRMWARE_HASH) == 0) {
+            include_firmware_hash = true;
+        }
+    }
+
+    claims_buf[0] = '{';
+    claims_buf[1] = '\0';
+    used          = 1;
+
+    if (include_device_identity) {
+        model         = vantaq_runtime_device_model(runtime_config);
+        serial_number = vantaq_runtime_device_serial_number(runtime_config);
+        if (model == NULL || model[0] == '\0' || serial_number == NULL ||
+            serial_number[0] == '\0') {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
+            goto cleanup;
+        }
+
+        n = snprintf(claims_buf + used, sizeof(claims_buf) - used,
+                     "%s\"device_identity\":{\"model\":\"%s\",\"serial_number\":\"%s\"}",
+                     first ? "" : ",", model, serial_number);
+        if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            goto cleanup;
+        }
+        used += (size_t)n;
+        first = false;
+    }
+
+    if (include_firmware_hash) {
+        measurement_status = vantaq_firmware_hash_measure(runtime_config, &measurement_result);
+        if (measurement_status == VANTAQ_FIRMWARE_HASH_ERR_SOURCE_NOT_FOUND) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND;
+            goto cleanup;
+        }
+        if (measurement_status == VANTAQ_FIRMWARE_HASH_ERR_HASH_FAILED) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED;
+            goto cleanup;
+        }
+        if (measurement_status != VANTAQ_FIRMWARE_HASH_OK || measurement_result == NULL) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        firmware_value = vantaq_measurement_result_get_value(measurement_result);
+        if (firmware_value == NULL || firmware_value[0] == '\0') {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"firmware_hash\":\"%s\"",
+                     first ? "" : ",", firmware_value);
+        if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            goto cleanup;
+        }
+        used += (size_t)n;
+        first = false;
+    }
+
+    n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "}");
+    if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+        goto cleanup;
+    }
+
+    *out_claims_json = strdup(claims_buf);
+    if (*out_claims_json == NULL) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+        goto cleanup;
+    }
+
+    app_err = VANTAQ_APP_EVIDENCE_OK;
+
+cleanup:
+    vantaq_measurement_result_destroy(measurement_result);
+    return app_err;
+}
+
+vantaq_app_evidence_err_t vantaq_app_create_evidence(
+    struct vantaq_challenge_store *store, struct vantaq_latest_evidence_store *latest_store,
+    const struct vantaq_runtime_config *runtime_config, const vantaq_device_key_t *device_key,
+    const char *verifier_id, const struct vantaq_create_evidence_req *req,
+    int64_t current_time_unix, struct vantaq_create_evidence_res *out_res) {
+    if (!store || !runtime_config || !device_key || !verifier_id || !req || !out_res) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
     }
 
@@ -132,7 +238,12 @@ vantaq_app_create_evidence(struct vantaq_challenge_store *store,
         goto cleanup;
     }
 
-    app_err = build_claims_json(req, &claims_json);
+    app_err = validate_claims_selection(runtime_config, req);
+    if (app_err != VANTAQ_APP_EVIDENCE_OK) {
+        goto cleanup;
+    }
+
+    app_err = build_claims_json(runtime_config, req, &claims_json);
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
         goto cleanup;
     }

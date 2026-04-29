@@ -32,7 +32,6 @@ static_assert(VANTAQ_CHALLENGE_JSON_BUF_SIZE > EXPECTED_MAX_JSON,
      VANTAQ_SIGNATURE_MAX + VANTAQ_CLAIMS_MAX + 256)
 static_assert(VANTAQ_EVIDENCE_JSON_BUF_SIZE > EXPECTED_MAX_EVIDENCE_JSON,
               "Evidence JSON buffer too small for maximum field sizes");
-#define VANTAQ_MAX_CLAIMS_COUNT 16
 
 static void audit_challenge_creation(const struct vantaq_http_health_context *ctx,
                                      const struct vantaq_http_request_context *req_ctx,
@@ -216,6 +215,11 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
 
     struct vantaq_create_evidence_req req;
     struct vantaq_create_evidence_res res;
+    char claims_storage[VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST][VANTAQ_MAX_FIELD_LEN];
+    const char *claim_ptrs[VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST];
+    size_t claims_count = 0;
+    bool claims_present = false;
+    size_t i;
     char challenge_id[VANTAQ_CHALLENGE_ID_MAX];
     char nonce[VANTAQ_NONCE_HEX_MAX];
     char json[VANTAQ_EVIDENCE_JSON_BUF_SIZE];
@@ -250,9 +254,48 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
     req.challenge_id = challenge_id;
     req.nonce        = nonce;
     req.device_id    = ctx->device_id;
+    req.claims       = NULL;
+    req.claims_count = 0;
+
+    if (!vantaq_json_extract_str_array(
+            body_start, "claims", (char *)claims_storage, sizeof(claims_storage[0]),
+            VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST, &claims_count, &claims_present)) {
+        int error_json_n;
+        int error_resp_n;
+
+        audit_evidence_creation(ctx, req_ctx, "denied", "INVALID_CLAIMS");
+        error_json_n = snprintf(error_json, sizeof(error_json),
+                                "{\"error\":{\"code\":\"INVALID_CLAIMS\",\"request_id\":\"%s\"}}\n",
+                                req_ctx->request_id);
+        if (error_json_n <= 0 || (size_t)error_json_n >= sizeof(error_json)) {
+            return vantaq_http_send_status_response(connection, 400);
+        }
+
+        error_resp_n = snprintf(error_response, sizeof(error_response),
+                                "HTTP/1.1 400 Error\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Content-Length: %d\r\n"
+                                "Connection: close\r\n"
+                                "\r\n"
+                                "%s",
+                                error_json_n, error_json);
+        if (error_resp_n <= 0 || (size_t)error_resp_n >= sizeof(error_response)) {
+            return vantaq_http_send_status_response(connection, 400);
+        }
+
+        return vantaq_http_write_all(connection, error_response, (size_t)error_resp_n);
+    }
+
+    if (claims_present) {
+        for (i = 0; i < claims_count; i++) {
+            claim_ptrs[i] = claims_storage[i];
+        }
+        req.claims       = claim_ptrs;
+        req.claims_count = claims_count;
+    }
 
     vantaq_app_evidence_err_t app_err = vantaq_app_create_evidence(
-        ctx->challenge_store, ctx->latest_evidence_store, ctx->device_key,
+        ctx->challenge_store, ctx->latest_evidence_store, ctx->runtime_config, ctx->device_key,
         req_ctx->verifier_auth.identity.id, &req, (int64_t)time(NULL), &res);
 
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
@@ -279,6 +322,30 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             break;
         case VANTAQ_APP_EVIDENCE_ERR_SIGNING_FAILED:
             reason      = "signing_failed";
+            http_status = 500;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS:
+            reason      = "INVALID_CLAIMS";
+            http_status = 400;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM:
+            reason      = "UNSUPPORTED_CLAIM";
+            http_status = 400;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED:
+            reason      = "CLAIM_NOT_ALLOWED";
+            http_status = 403;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND:
+            reason      = "MEASUREMENT_SOURCE_NOT_FOUND";
+            http_status = 404;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED:
+            reason      = "MEASUREMENT_READ_FAILED";
+            http_status = 500;
+            break;
+        case VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED:
+            reason      = "MEASUREMENT_HASH_FAILED";
             http_status = 500;
             break;
         default:

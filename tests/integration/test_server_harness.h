@@ -15,6 +15,8 @@ struct vantaq_test_server_opts {
     const char *allowed_subnets;
     const char *dev_allow_all_networks;
     const char *allowed_apis_yaml;
+    const char *supported_claims_yaml;
+    const char *measurement_firmware_path;
     int startup_timeout_ms;
     int max_start_retries;
 };
