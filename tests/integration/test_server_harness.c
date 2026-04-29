@@ -339,6 +339,7 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     const char *cert_path;
     const char *supported_claims_yaml;
     const char *measurement_firmware_path;
+    const char *measurement_security_config_path;
     int fd;
     int n;
 
@@ -381,7 +382,7 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                            "  storage_modes: []\n"
                            "measurement:\n"
                            "  firmware_path: %s\n"
-                           "  security_config_path: /etc/vantaqd/security.conf\n"
+                           "  security_config_path: %s\n"
                            "  agent_binary_path: /usr/local/bin/vantaqd\n"
                            "  boot_state_path: /run/vantaqd/boot_state\n"
                            "  max_measurement_file_bytes: 16777216\n"
@@ -399,6 +400,9 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     measurement_firmware_path = opts->measurement_firmware_path != NULL
                                     ? opts->measurement_firmware_path
                                     : "/opt/vantaqd/firmware/current.bin";
+    measurement_security_config_path = opts->measurement_security_config_path != NULL
+                                           ? opts->measurement_security_config_path
+                                           : "/etc/vantaqd/security.conf";
 
     fd = mkstemps(template, 5);
     if (fd < 0) {
@@ -409,7 +413,8 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                  cert_path, opts->tls_enabled ? "config/certs/device-server.key" : "/etc/hosts",
                  opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
                  opts->require_client_cert ? "true" : "false", apis, supported_claims_yaml,
-                 measurement_firmware_path, allowed_subnets, dev_allow_all,
+                 measurement_firmware_path, measurement_security_config_path, allowed_subnets,
+                 dev_allow_all,
                  opts->include_challenge
                      ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
                      : "");
@@ -465,16 +470,17 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     }
 
     VANTAQ_ZERO_STRUCT(defaults);
-    defaults.tls_enabled               = false;
-    defaults.require_client_cert       = true;
-    defaults.include_challenge         = false;
-    defaults.allowed_subnets           = "127.0.0.1/32";
-    defaults.dev_allow_all_networks    = "false";
-    defaults.allowed_apis_yaml         = "      - GET /v1/health\n";
-    defaults.supported_claims_yaml     = "    - device_identity\n";
-    defaults.measurement_firmware_path = "/opt/vantaqd/firmware/current.bin";
-    defaults.startup_timeout_ms        = 4000;
-    defaults.max_start_retries         = 5;
+    defaults.tls_enabled                      = false;
+    defaults.require_client_cert              = true;
+    defaults.include_challenge                = false;
+    defaults.allowed_subnets                  = "127.0.0.1/32";
+    defaults.dev_allow_all_networks           = "false";
+    defaults.allowed_apis_yaml                = "      - GET /v1/health\n";
+    defaults.supported_claims_yaml            = "    - device_identity\n";
+    defaults.measurement_firmware_path        = "/opt/vantaqd/firmware/current.bin";
+    defaults.measurement_security_config_path = "/etc/vantaqd/security.conf";
+    defaults.startup_timeout_ms               = 4000;
+    defaults.max_start_retries                = 5;
 
     if (opts->allowed_subnets == NULL) {
         defaults.allowed_subnets = "127.0.0.1/32";
@@ -492,6 +498,9 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     }
     if (opts->measurement_firmware_path != NULL) {
         defaults.measurement_firmware_path = opts->measurement_firmware_path;
+    }
+    if (opts->measurement_security_config_path != NULL) {
+        defaults.measurement_security_config_path = opts->measurement_security_config_path;
     }
     defaults.tls_enabled         = opts->tls_enabled;
     defaults.require_client_cert = opts->require_client_cert;

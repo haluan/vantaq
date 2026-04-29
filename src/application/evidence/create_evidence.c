@@ -4,6 +4,7 @@
 #include "application/evidence/create_evidence.h"
 #include "domain/evidence/evidence_canonical.h"
 #include "infrastructure/crypto/evidence_signer.h"
+#include "infrastructure/linux_measurement/config_hash.h"
 #include "infrastructure/linux_measurement/firmware_hash.h"
 
 #include <stdio.h>
@@ -75,8 +76,7 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
             return VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED;
         }
 
-        if (strcmp(claim, CLAIM_CONFIG_HASH) == 0 || strcmp(claim, CLAIM_AGENT_INTEGRITY) == 0 ||
-            strcmp(claim, CLAIM_BOOT_STATE) == 0) {
+        if (strcmp(claim, CLAIM_AGENT_INTEGRITY) == 0 || strcmp(claim, CLAIM_BOOT_STATE) == 0) {
             return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
         }
     }
@@ -89,12 +89,15 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
                   const struct vantaq_create_evidence_req *req, char **out_claims_json) {
     vantaq_app_evidence_err_t app_err                    = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
     struct vantaq_measurement_result *measurement_result = NULL;
-    enum vantaq_firmware_hash_status measurement_status;
+    enum vantaq_firmware_hash_status firmware_measurement_status;
+    enum vantaq_config_hash_status config_measurement_status;
     const char *firmware_value = NULL;
+    const char *config_value   = NULL;
     const char *model;
     const char *serial_number;
     bool include_device_identity = false;
     bool include_firmware_hash   = false;
+    bool include_config_hash     = false;
     bool first                   = true;
     size_t i;
     int n;
@@ -111,6 +114,8 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
             include_device_identity = true;
         } else if (strcmp(req->claims[i], CLAIM_FIRMWARE_HASH) == 0) {
             include_firmware_hash = true;
+        } else if (strcmp(req->claims[i], CLAIM_CONFIG_HASH) == 0) {
+            include_config_hash = true;
         }
     }
 
@@ -139,16 +144,17 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
     }
 
     if (include_firmware_hash) {
-        measurement_status = vantaq_firmware_hash_measure(runtime_config, &measurement_result);
-        if (measurement_status == VANTAQ_FIRMWARE_HASH_ERR_SOURCE_NOT_FOUND) {
+        firmware_measurement_status =
+            vantaq_firmware_hash_measure(runtime_config, &measurement_result);
+        if (firmware_measurement_status == VANTAQ_FIRMWARE_HASH_ERR_SOURCE_NOT_FOUND) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND;
             goto cleanup;
         }
-        if (measurement_status == VANTAQ_FIRMWARE_HASH_ERR_HASH_FAILED) {
+        if (firmware_measurement_status == VANTAQ_FIRMWARE_HASH_ERR_HASH_FAILED) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED;
             goto cleanup;
         }
-        if (measurement_status != VANTAQ_FIRMWARE_HASH_OK || measurement_result == NULL) {
+        if (firmware_measurement_status != VANTAQ_FIRMWARE_HASH_OK || measurement_result == NULL) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
             goto cleanup;
         }
@@ -167,6 +173,43 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
         }
         used += (size_t)n;
         first = false;
+
+        vantaq_measurement_result_destroy(measurement_result);
+        measurement_result = NULL;
+    }
+
+    if (include_config_hash) {
+        config_measurement_status = vantaq_config_hash_measure(runtime_config, &measurement_result);
+        if (config_measurement_status == VANTAQ_CONFIG_HASH_ERR_SOURCE_NOT_FOUND) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND;
+            goto cleanup;
+        }
+        if (config_measurement_status == VANTAQ_CONFIG_HASH_ERR_HASH_FAILED) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED;
+            goto cleanup;
+        }
+        if (config_measurement_status != VANTAQ_CONFIG_HASH_OK || measurement_result == NULL) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        config_value = vantaq_measurement_result_get_value(measurement_result);
+        if (config_value == NULL || config_value[0] == '\0') {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"config_hash\":\"%s\"",
+                     first ? "" : ",", config_value);
+        if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            goto cleanup;
+        }
+        used += (size_t)n;
+        first = false;
+
+        vantaq_measurement_result_destroy(measurement_result);
+        measurement_result = NULL;
     }
 
     n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "}");
