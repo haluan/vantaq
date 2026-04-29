@@ -507,8 +507,8 @@ static enum vantaq_config_status parse_bool(struct vantaq_config_loader *loader,
 
 static bool is_valid_capability_item(enum vantaq_capability_list list, const char *item) {
     static const char *const supported_claims[] = {
-        "device_identity",  "firmware_hash", "config_hash",    "hw_version", "sw_version",
-        "boot_loader_hash", "pcr_values",    "security_level", NULL};
+        "device_identity", "firmware_hash",    "config_hash", "agent_integrity", "hw_version",
+        "sw_version",      "boot_loader_hash", "pcr_values",  "security_level",  NULL};
     static const char *const signature_algorithms[] = {"ES256", "ES384", "ES512", "RS256",
                                                        "RS384", "RS512", NULL};
     static const char *const evidence_formats[]     = {"eat", "dice", "tpm1.2", "tpm2.0", NULL};
