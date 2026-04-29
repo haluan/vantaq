@@ -37,6 +37,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/linux_measurement/firmware_hash.c
   src/infrastructure/linux_measurement/config_hash.c
   src/infrastructure/linux_measurement/agent_integrity.c
+  src/infrastructure/linux_measurement/boot_state.c
   src/infrastructure/crypto/device_key_loader.c
   src/infrastructure/crypto/evidence_signer.c
 )
@@ -207,6 +208,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_agent_integrity_measurement tests/unit/test_agent_integrity_measurement.c)
   target_link_libraries(test_agent_integrity_measurement PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::Crypto)
   add_test(NAME unit_agent_integrity_measurement COMMAND test_agent_integrity_measurement)
+
+  add_executable(test_boot_state_measurement tests/unit/test_boot_state_measurement.c)
+  target_link_libraries(test_boot_state_measurement PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_boot_state_measurement COMMAND test_boot_state_measurement)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)
