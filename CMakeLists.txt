@@ -163,6 +163,13 @@ if(VANTAQ_BUILD_TESTS)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
+  add_executable(test_firmware_hash_change tests/integration/test_firmware_hash_change.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_link_libraries(test_firmware_hash_change PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_firmware_hash_change COMMAND test_firmware_hash_change)
+  set_tests_properties(integration_firmware_hash_change PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
   add_executable(test_evidence_config_hash_claim tests/integration/test_evidence_config_hash_claim.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_evidence_config_hash_claim PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_evidence_config_hash_claim COMMAND test_evidence_config_hash_claim)
