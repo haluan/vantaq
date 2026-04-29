@@ -176,6 +176,13 @@ if(VANTAQ_BUILD_TESTS)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
+  add_executable(test_evidence_boot_state_claim tests/integration/test_evidence_boot_state_claim.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_link_libraries(test_evidence_boot_state_claim PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_evidence_boot_state_claim COMMAND test_evidence_boot_state_claim)
+  set_tests_properties(integration_evidence_boot_state_claim PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
   add_executable(test_replayed_challenge tests/integration/test_replayed_challenge.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_replayed_challenge PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_replayed_challenge COMMAND test_replayed_challenge)

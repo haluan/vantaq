@@ -341,6 +341,7 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     const char *measurement_firmware_path;
     const char *measurement_security_config_path;
     const char *measurement_agent_binary_path;
+    const char *measurement_boot_state_path;
     int fd;
     int n;
 
@@ -385,7 +386,7 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                            "  firmware_path: %s\n"
                            "  security_config_path: %s\n"
                            "  agent_binary_path: %s\n"
-                           "  boot_state_path: /run/vantaqd/boot_state\n"
+                           "  boot_state_path: %s\n"
                            "  max_measurement_file_bytes: 16777216\n"
                            "network_access:\n"
                            "  allowed_subnets: [%s]\n"
@@ -407,6 +408,9 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     measurement_agent_binary_path    = opts->measurement_agent_binary_path != NULL
                                            ? opts->measurement_agent_binary_path
                                            : "/usr/local/bin/vantaqd";
+    measurement_boot_state_path      = opts->measurement_boot_state_path != NULL
+                                           ? opts->measurement_boot_state_path
+                                           : "/run/vantaqd/boot_state";
 
     fd = mkstemps(template, 5);
     if (fd < 0) {
@@ -418,7 +422,8 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                  opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
                  opts->require_client_cert ? "true" : "false", apis, supported_claims_yaml,
                  measurement_firmware_path, measurement_security_config_path,
-                 measurement_agent_binary_path, allowed_subnets, dev_allow_all,
+                 measurement_agent_binary_path, measurement_boot_state_path, allowed_subnets,
+                 dev_allow_all,
                  opts->include_challenge
                      ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
                      : "");
@@ -484,6 +489,7 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     defaults.measurement_firmware_path        = "/opt/vantaqd/firmware/current.bin";
     defaults.measurement_security_config_path = "/etc/vantaqd/security.conf";
     defaults.measurement_agent_binary_path    = "/usr/local/bin/vantaqd";
+    defaults.measurement_boot_state_path      = "/run/vantaqd/boot_state";
     defaults.startup_timeout_ms               = 4000;
     defaults.max_start_retries                = 5;
 
@@ -509,6 +515,9 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     }
     if (opts->measurement_agent_binary_path != NULL) {
         defaults.measurement_agent_binary_path = opts->measurement_agent_binary_path;
+    }
+    if (opts->measurement_boot_state_path != NULL) {
+        defaults.measurement_boot_state_path = opts->measurement_boot_state_path;
     }
     defaults.tls_enabled         = opts->tls_enabled;
     defaults.require_client_cert = opts->require_client_cert;

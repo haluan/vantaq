@@ -5,6 +5,7 @@
 #include "domain/evidence/evidence_canonical.h"
 #include "infrastructure/crypto/evidence_signer.h"
 #include "infrastructure/linux_measurement/agent_integrity.h"
+#include "infrastructure/linux_measurement/boot_state.h"
 #include "infrastructure/linux_measurement/config_hash.h"
 #include "infrastructure/linux_measurement/firmware_hash.h"
 
@@ -19,6 +20,67 @@
 #define CLAIM_CONFIG_HASH "config_hash"
 #define CLAIM_AGENT_INTEGRITY "agent_integrity"
 #define CLAIM_BOOT_STATE "boot_state"
+#define BOOT_STATE_KEY_SECURE_BOOT "secure_boot"
+#define BOOT_STATE_KEY_BOOT_MODE "boot_mode"
+
+static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
+                                         size_t secure_boot_size, char *boot_mode,
+                                         size_t boot_mode_size) {
+    bool ok          = false;
+    bool has_secure  = false;
+    bool has_mode    = false;
+    char *copy       = NULL;
+    char *token_ctx  = NULL;
+    char *token      = NULL;
+    char *equal_sign = NULL;
+    const char *key;
+    const char *val;
+
+    if (value == NULL || secure_boot == NULL || boot_mode == NULL || secure_boot_size == 0 ||
+        boot_mode_size == 0) {
+        return false;
+    }
+
+    secure_boot[0] = '\0';
+    boot_mode[0]   = '\0';
+
+    copy = strdup(value);
+    if (copy == NULL) {
+        return false;
+    }
+
+    token = strtok_r(copy, ";", &token_ctx);
+    while (token != NULL) {
+        equal_sign = strchr(token, '=');
+        if (equal_sign != NULL) {
+            *equal_sign = '\0';
+            key         = token;
+            val         = equal_sign + 1;
+
+            if (strcmp(key, BOOT_STATE_KEY_SECURE_BOOT) == 0) {
+                if (has_secure || val[0] == '\0' || strlen(val) >= secure_boot_size) {
+                    goto cleanup;
+                }
+                memcpy(secure_boot, val, strlen(val) + 1U);
+                has_secure = true;
+            } else if (strcmp(key, BOOT_STATE_KEY_BOOT_MODE) == 0) {
+                if (has_mode || val[0] == '\0' || strlen(val) >= boot_mode_size) {
+                    goto cleanup;
+                }
+                memcpy(boot_mode, val, strlen(val) + 1U);
+                has_mode = true;
+            }
+        }
+
+        token = strtok_r(NULL, ";", &token_ctx);
+    }
+
+    ok = has_secure && has_mode;
+
+cleanup:
+    free(copy);
+    return ok;
+}
 
 static bool is_known_claim(const char *claim) {
     return strcmp(claim, CLAIM_DEVICE_IDENTITY) == 0 || strcmp(claim, CLAIM_FIRMWARE_HASH) == 0 ||
@@ -76,10 +138,6 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
         if (!is_claim_allowed(runtime_config, claim)) {
             return VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED;
         }
-
-        if (strcmp(claim, CLAIM_BOOT_STATE) == 0) {
-            return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
-        }
     }
 
     return VANTAQ_APP_EVIDENCE_OK;
@@ -93,15 +151,20 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
     enum vantaq_firmware_hash_status firmware_measurement_status;
     enum vantaq_config_hash_status config_measurement_status;
     enum vantaq_agent_integrity_status agent_integrity_measurement_status;
+    enum vantaq_boot_state_status boot_state_measurement_status;
     const char *firmware_value = NULL;
     const char *config_value   = NULL;
     const char *agent_integrity_value;
+    const char *boot_state_value;
     const char *model;
     const char *serial_number;
+    char boot_state_secure_boot[VANTAQ_MEASUREMENT_VALUE_MAX];
+    char boot_state_mode[VANTAQ_MEASUREMENT_VALUE_MAX];
     bool include_device_identity = false;
     bool include_firmware_hash   = false;
     bool include_config_hash     = false;
     bool include_agent_integrity = false;
+    bool include_boot_state      = false;
     bool first                   = true;
     size_t i;
     int n;
@@ -122,6 +185,8 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
             include_config_hash = true;
         } else if (strcmp(req->claims[i], CLAIM_AGENT_INTEGRITY) == 0) {
             include_agent_integrity = true;
+        } else if (strcmp(req->claims[i], CLAIM_BOOT_STATE) == 0) {
+            include_boot_state = true;
         }
     }
 
@@ -243,6 +308,44 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
 
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"agent_integrity\":\"%s\"",
                      first ? "" : ",", agent_integrity_value);
+        if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            goto cleanup;
+        }
+        used += (size_t)n;
+        first = false;
+
+        vantaq_measurement_result_destroy(measurement_result);
+        measurement_result = NULL;
+    }
+
+    if (include_boot_state) {
+        boot_state_measurement_status =
+            vantaq_boot_state_measure(runtime_config, &measurement_result);
+        if (boot_state_measurement_status == VANTAQ_BOOT_STATE_ERR_SOURCE_NOT_FOUND) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND;
+            goto cleanup;
+        }
+        if (boot_state_measurement_status != VANTAQ_BOOT_STATE_OK || measurement_result == NULL) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        boot_state_value = vantaq_measurement_result_get_value(measurement_result);
+        if (boot_state_value == NULL || boot_state_value[0] == '\0') {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+        if (!parse_boot_state_claim_value(boot_state_value, boot_state_secure_boot,
+                                          sizeof(boot_state_secure_boot), boot_state_mode,
+                                          sizeof(boot_state_mode))) {
+            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            goto cleanup;
+        }
+
+        n = snprintf(claims_buf + used, sizeof(claims_buf) - used,
+                     "%s\"boot_state\":{\"secure_boot\":\"%s\",\"boot_mode\":\"%s\"}",
+                     first ? "" : ",", boot_state_secure_boot, boot_state_mode);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
             goto cleanup;
