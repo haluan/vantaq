@@ -34,6 +34,7 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/evidence/evidence.c
   src/domain/evidence/evidence_canonical.c
   src/domain/measurement/measurement.c
+  src/infrastructure/linux_measurement/firmware_hash.c
   src/infrastructure/crypto/device_key_loader.c
   src/infrastructure/crypto/evidence_signer.c
 )
@@ -194,6 +195,10 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_measurement_domain tests/unit/test_measurement_domain.c)
   target_link_libraries(test_measurement_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_measurement_domain COMMAND test_measurement_domain)
+
+  add_executable(test_firmware_hash_measurement tests/unit/test_firmware_hash_measurement.c)
+  target_link_libraries(test_firmware_hash_measurement PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET} OpenSSL::Crypto)
+  add_test(NAME unit_firmware_hash_measurement COMMAND test_firmware_hash_measurement)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

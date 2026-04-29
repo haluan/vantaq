@@ -37,6 +37,8 @@ device_identity:
   serial_number: SN123456
   manufacturer: Vantaq Corp
   firmware_version: 2.1.0
+  device_priv_key_path: /etc/vantaqd/certs/device-server.key
+  device_pub_key_path: /etc/vantaqd/certs/device-server.crt
 
 capabilities:
   supported_claims:
@@ -45,6 +47,13 @@ capabilities:
   evidence_formats: []
   challenge_modes: []
   storage_modes: []
+
+measurement:
+  firmware_path: /opt/vantaqd/firmware/current.bin
+  security_config_path: /etc/vantaqd/security.conf
+  agent_binary_path: /usr/local/bin/vantaqd
+  boot_state_path: /run/vantaqd/boot_state
+  max_measurement_file_bytes: 16777216
 
 network_access:
   allowed_subnets:

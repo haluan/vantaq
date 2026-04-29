@@ -41,6 +41,13 @@ capabilities:
   challenge_modes: []
   storage_modes: []
 
+measurement:
+  firmware_path: /opt/vantaqd/firmware/current.bin
+  security_config_path: /etc/vantaqd/security.conf
+  agent_binary_path: /usr/local/bin/vantaqd
+  boot_state_path: /run/vantaqd/boot_state
+  max_measurement_file_bytes: 16777216
+
 network_access:
   allowed_subnets:
     - 10.50.10.0/24

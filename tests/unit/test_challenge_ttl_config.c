@@ -38,6 +38,12 @@
     "  evidence_formats: [eat]\n"                                                                  \
     "  challenge_modes: [nonce]\n"                                                                 \
     "  storage_modes: [volatile]\n"                                                                \
+    "measurement:\n"                                                                               \
+    "  firmware_path: /opt/vantaqd/firmware/current.bin\n"                                         \
+    "  security_config_path: /etc/vantaqd/security.conf\n"                                         \
+    "  agent_binary_path: /usr/local/bin/vantaqd\n"                                                \
+    "  boot_state_path: /run/vantaqd/boot_state\n"                                                 \
+    "  max_measurement_file_bytes: 16777216\n"                                                     \
     "verifiers:\n"                                                                                 \
     "  - verifier_id: v1\n"                                                                        \
     "    cert_subject_cn: v1\n"                                                                    \

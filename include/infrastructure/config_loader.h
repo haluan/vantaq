@@ -9,6 +9,11 @@
 #define VANTAQ_DEFAULT_CONFIG_PATH "/etc/vantaqd/vantaqd.yaml"
 #define VANTAQ_MAX_LIST_ITEMS 64
 #define VANTAQ_MAX_FIELD_LEN 128
+#define VANTAQ_MEASUREMENT_DEFAULT_FIRMWARE_PATH "/opt/vantaqd/firmware/current.bin"
+#define VANTAQ_MEASUREMENT_DEFAULT_SECURITY_CONFIG_PATH "/etc/vantaqd/security.conf"
+#define VANTAQ_MEASUREMENT_DEFAULT_AGENT_BINARY_PATH "/usr/local/bin/vantaqd"
+#define VANTAQ_MEASUREMENT_DEFAULT_BOOT_STATE_PATH "/run/vantaqd/boot_state"
+#define VANTAQ_MEASUREMENT_DEFAULT_MAX_FILE_BYTES (16U * 1024U * 1024U)
 
 #include <stdbool.h>
 
@@ -52,6 +57,11 @@ struct vantaq_runtime_config {
     char firmware_version[VANTAQ_MAX_FIELD_LEN];
     char device_priv_key_path[VANTAQ_MAX_FIELD_LEN];
     char device_pub_key_path[VANTAQ_MAX_FIELD_LEN];
+    char measurement_firmware_path[VANTAQ_MAX_FIELD_LEN];
+    char measurement_security_config_path[VANTAQ_MAX_FIELD_LEN];
+    char measurement_agent_binary_path[VANTAQ_MAX_FIELD_LEN];
+    char measurement_boot_state_path[VANTAQ_MAX_FIELD_LEN];
+    size_t measurement_max_file_bytes;
 
     struct vantaq_string_list supported_claims;
     struct vantaq_string_list signature_algorithms;
@@ -83,6 +93,11 @@ struct vantaq_runtime_config {
     bool has_firmware_version;
     bool has_device_priv_key_path;
     bool has_device_pub_key_path;
+    bool has_measurement_firmware_path;
+    bool has_measurement_security_config_path;
+    bool has_measurement_agent_binary_path;
+    bool has_measurement_boot_state_path;
+    bool has_measurement_max_file_bytes;
     bool has_supported_claims;
     bool has_signature_algorithms;
     bool has_evidence_formats;
@@ -145,6 +160,12 @@ const char *vantaq_runtime_device_manufacturer(const struct vantaq_runtime_confi
 const char *vantaq_runtime_device_firmware_version(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_device_priv_key_path(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_device_pub_key_path(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_measurement_firmware_path(const struct vantaq_runtime_config *config);
+const char *
+vantaq_runtime_measurement_security_config_path(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_measurement_agent_binary_path(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_measurement_boot_state_path(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_measurement_max_file_bytes(const struct vantaq_runtime_config *config);
 
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,
                                        enum vantaq_capability_list list);

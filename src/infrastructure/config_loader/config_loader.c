@@ -25,6 +25,7 @@ enum vantaq_section {
     VANTAQ_SECTION_SERVER,
     VANTAQ_SECTION_SERVER_TLS,
     VANTAQ_SECTION_DEVICE_IDENTITY,
+    VANTAQ_SECTION_MEASUREMENT,
     VANTAQ_SECTION_CAPABILITIES,
     VANTAQ_SECTION_NETWORK_ACCESS,
     VANTAQ_SECTION_AUDIT,
@@ -729,6 +730,27 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
                          "device_identity.device_pub_key_path", config->device_pub_key_path);
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
+    if (!config->has_measurement_firmware_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.firmware_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_security_config_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.security_config_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_agent_binary_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.agent_binary_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_boot_state_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.boot_state_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_max_file_bytes) {
+        loader_set_error(loader, "missing required field %s",
+                         "measurement.max_measurement_file_bytes");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
     if (!config->has_supported_claims) {
         loader_set_error(loader, "missing required field %s", "capabilities.supported_claims");
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
@@ -1130,6 +1152,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 has_active_network_subnet_list = false;
                 continue;
             }
+            if (strcmp(key, "measurement") == 0) {
+                section                        = VANTAQ_SECTION_MEASUREMENT;
+                has_active_capability_list     = false;
+                has_active_network_subnet_list = false;
+                continue;
+            }
             if (strcmp(key, "capabilities") == 0) {
                 section                        = VANTAQ_SECTION_CAPABILITIES;
                 has_active_capability_list     = false;
@@ -1336,6 +1364,60 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
 
             loader_set_error(loader, "unknown device_identity field %s", key);
+            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        }
+
+        if (section == VANTAQ_SECTION_MEASUREMENT) {
+            if (strcmp(key, "firmware_path") == 0) {
+                rc = copy_string_to_field(
+                    loader, "measurement.firmware_path", value, tmp->measurement_firmware_path,
+                    sizeof(tmp->measurement_firmware_path), &tmp->has_measurement_firmware_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "security_config_path") == 0) {
+                rc = copy_string_to_field(loader, "measurement.security_config_path", value,
+                                          tmp->measurement_security_config_path,
+                                          sizeof(tmp->measurement_security_config_path),
+                                          &tmp->has_measurement_security_config_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "agent_binary_path") == 0) {
+                rc = copy_string_to_field(loader, "measurement.agent_binary_path", value,
+                                          tmp->measurement_agent_binary_path,
+                                          sizeof(tmp->measurement_agent_binary_path),
+                                          &tmp->has_measurement_agent_binary_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "boot_state_path") == 0) {
+                rc = copy_string_to_field(loader, "measurement.boot_state_path", value,
+                                          tmp->measurement_boot_state_path,
+                                          sizeof(tmp->measurement_boot_state_path),
+                                          &tmp->has_measurement_boot_state_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+            if (strcmp(key, "max_measurement_file_bytes") == 0) {
+                rc = parse_size_t(loader, "measurement.max_measurement_file_bytes", value,
+                                  &tmp->measurement_max_file_bytes,
+                                  &tmp->has_measurement_max_file_bytes);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    return rc;
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown measurement field %s", key);
             return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
         }
 
@@ -1683,6 +1765,53 @@ const char *vantaq_runtime_device_pub_key_path(const struct vantaq_runtime_confi
         return "";
     }
     return config->device_pub_key_path;
+}
+
+const char *vantaq_runtime_measurement_firmware_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, measurement_firmware_path) +
+                             sizeof(config->measurement_firmware_path)) {
+        return "";
+    }
+    return config->measurement_firmware_path;
+}
+
+const char *
+vantaq_runtime_measurement_security_config_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, measurement_security_config_path) +
+                             sizeof(config->measurement_security_config_path)) {
+        return "";
+    }
+    return config->measurement_security_config_path;
+}
+
+const char *
+vantaq_runtime_measurement_agent_binary_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, measurement_agent_binary_path) +
+                             sizeof(config->measurement_agent_binary_path)) {
+        return "";
+    }
+    return config->measurement_agent_binary_path;
+}
+
+const char *vantaq_runtime_measurement_boot_state_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, measurement_boot_state_path) +
+                             sizeof(config->measurement_boot_state_path)) {
+        return "";
+    }
+    return config->measurement_boot_state_path;
+}
+
+size_t vantaq_runtime_measurement_max_file_bytes(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, measurement_max_file_bytes) +
+                             sizeof(config->measurement_max_file_bytes)) {
+        return 0;
+    }
+    return config->measurement_max_file_bytes;
 }
 
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,

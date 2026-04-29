@@ -121,6 +121,12 @@ int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow
                            "  evidence_formats: []\n"
                            "  challenge_modes: []\n"
                            "  storage_modes: []\n"
+                           "measurement:\n"
+                           "  firmware_path: /opt/vantaqd/firmware/current.bin\n"
+                           "  security_config_path: /etc/vantaqd/security.conf\n"
+                           "  agent_binary_path: /usr/local/bin/vantaqd\n"
+                           "  boot_state_path: /run/vantaqd/boot_state\n"
+                           "  max_measurement_file_bytes: 16777216\n"
                            "network_access:\n"
                            "  allowed_subnets: [%s]\n"
                            "  dev_allow_all_networks: %s\n";
