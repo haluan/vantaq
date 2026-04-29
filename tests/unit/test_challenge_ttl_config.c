@@ -8,9 +8,12 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cmocka.h>
+
+#define TEST_PRIVATE_KEY_PATH "/tmp/vantaq_test_private_key.pem"
 
 #define YAML_MINIMAL                                                                               \
     "server:\n"                                                                                    \
@@ -20,7 +23,7 @@
     "  tls:\n"                                                                                     \
     "    enabled: false\n"                                                                         \
     "    server_cert_path: /etc/hosts\n"                                                           \
-    "    server_key_path: /etc/hosts\n"                                                            \
+    "    server_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                             \
     "    trusted_client_ca_path: /etc/hosts\n"                                                     \
     "    require_client_cert: true\n"                                                              \
     "device_identity:\n"                                                                           \
@@ -29,7 +32,7 @@
     "  serial_number: s1\n"                                                                        \
     "  manufacturer: m1\n"                                                                         \
     "  firmware_version: f1\n"                                                                     \
-    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_priv_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                          \
     "  device_pub_key_path: /etc/hosts\n"                                                          \
     "capabilities:\n"                                                                              \
     "  supported_claims: [device_identity]\n"                                                      \
@@ -48,8 +51,8 @@
     "    cert_subject_cn: v1\n"                                                                    \
     "    cert_san_uri: u1\n"                                                                       \
     "    status: active\n"                                                                         \
-    "    roles: [r1]\n"                                                                            \
-    "    allowed_apis: [a1]\n"
+    "    roles: [verifier]\n"                                                                      \
+    "    allowed_apis: [GET /v1/health]\n"
 
 static int write_temp_yaml(const char *content, char *path_out, size_t path_out_size) {
     char template[] = "/tmp/vantaq_ttl_cfg_XXXXXX.yaml";
@@ -62,6 +65,22 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
         unlink(template);
         return -1;
     }
+    {
+        FILE *key_fp = fopen(TEST_PRIVATE_KEY_PATH, "wb");
+        if (key_fp == NULL) {
+            close(fd);
+            unlink(template);
+            return -1;
+        }
+        (void)fputs("dummy-private-key-for-tests\n", key_fp);
+        fclose(key_fp);
+        if (chmod(TEST_PRIVATE_KEY_PATH, S_IRUSR | S_IWUSR) != 0) {
+            unlink(TEST_PRIVATE_KEY_PATH);
+            close(fd);
+            unlink(template);
+            return -1;
+        }
+    }
     if (write(fd, content, len) != (ssize_t)len) {
         close(fd);
         unlink(template);
@@ -70,6 +89,13 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
     close(fd);
     strcpy(path_out, template);
     return 0;
+}
+
+static void remove_temp_yaml(const char *path) {
+    if (path != NULL && path[0] != '\0') {
+        unlink(path);
+    }
+    unlink(TEST_PRIVATE_KEY_PATH);
 }
 
 static void test_valid_challenge_ttl_config(void **state) {
@@ -86,7 +112,7 @@ static void test_valid_challenge_ttl_config(void **state) {
     assert_int_equal(vantaq_runtime_challenge_ttl_seconds(config), 45);
 
     vantaq_config_loader_destroy(loader);
-    unlink(path);
+    remove_temp_yaml(path);
 }
 
 static void test_missing_challenge_ttl_uses_default(void **state) {
@@ -103,7 +129,7 @@ static void test_missing_challenge_ttl_uses_default(void **state) {
     assert_int_equal(vantaq_runtime_challenge_ttl_seconds(config), 30);
 
     vantaq_config_loader_destroy(loader);
-    unlink(path);
+    remove_temp_yaml(path);
 }
 
 static void test_invalid_challenge_ttl_fails(void **state) {
@@ -117,7 +143,28 @@ static void test_invalid_challenge_ttl_fails(void **state) {
     assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
 
     vantaq_config_loader_destroy(loader);
-    unlink(path);
+    remove_temp_yaml(path);
+}
+
+static void test_invalid_verifier_role_or_api_fails_validation(void **state) {
+    (void)state;
+    char path[256];
+    struct vantaq_config_loader *loader;
+    const char *yaml = YAML_MINIMAL "verifiers:\n"
+                                    "  - verifier_id: v1\n"
+                                    "    cert_subject_cn: v1\n"
+                                    "    cert_san_uri: u1\n"
+                                    "    status: active\n"
+                                    "    roles: [r1]\n"
+                                    "    allowed_apis: [a1]\n";
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_int_equal(vantaq_config_loader_load(loader, path),
+                     VANTAQ_CONFIG_STATUS_VALIDATION_ERROR);
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
 }
 
 int main(void) {
@@ -125,6 +172,7 @@ int main(void) {
         cmocka_unit_test(test_valid_challenge_ttl_config),
         cmocka_unit_test(test_missing_challenge_ttl_uses_default),
         cmocka_unit_test(test_invalid_challenge_ttl_fails),
+        cmocka_unit_test(test_invalid_verifier_role_or_api_fails_validation),
     };
     return cmocka_run_group_tests_name("unit_challenge_ttl_config", tests, NULL, NULL);
 }

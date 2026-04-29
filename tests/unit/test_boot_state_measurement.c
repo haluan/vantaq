@@ -3,6 +3,7 @@
 
 #include "domain/measurement/measurement.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/config_loader_internal.h"
 #include "infrastructure/linux_measurement/boot_state.h"
 #include "infrastructure/memory/zero_struct.h"
 
@@ -78,8 +79,7 @@ static void test_boot_state_success(void **state) {
     struct BootStateMeasurementTestSuite *s = *state;
     struct vantaq_runtime_config config;
     struct vantaq_measurement_result *result = NULL;
-    const unsigned char content[]            = "unknown_key=ignored\n"
-                                               "boot_mode=normal\n"
+    const unsigned char content[]            = "boot_mode=normal\n"
                                                "secure_boot=mock_enabled\n"
                                                "rollback_detected=false\n";
 
@@ -101,7 +101,7 @@ static void test_boot_state_success(void **state) {
     vantaq_measurement_result_destroy(result);
 }
 
-static void test_boot_state_unknown_keys_ignored(void **state) {
+static void test_boot_state_unknown_keys_rejected(void **state) {
     struct BootStateMeasurementTestSuite *s = *state;
     struct vantaq_runtime_config config;
     struct vantaq_measurement_result *result = NULL;
@@ -114,10 +114,52 @@ static void test_boot_state_unknown_keys_ignored(void **state) {
 
     enum vantaq_boot_state_status status = vantaq_boot_state_measure(&config, &result);
 
-    s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_OK);
+    s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
     s_assert_non_null(s, result);
-    s_assert_string_equal(s, vantaq_measurement_result_get_value(result),
-                          "secure_boot=enabled;boot_mode=recovery;rollback_detected=");
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_PARSE_FAILED);
+
+    vantaq_measurement_result_destroy(result);
+}
+
+static void test_boot_state_duplicate_key_rejected(void **state) {
+    struct BootStateMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+    const unsigned char content[]            = "secure_boot=enabled\n"
+                                               "secure_boot=disabled\n"
+                                               "boot_mode=normal\n";
+
+    assert_int_equal(write_file(s->boot_state_path, content, sizeof(content) - 1), 0);
+    fill_measurement_config(&config, s->boot_state_path, 1024);
+
+    enum vantaq_boot_state_status status = vantaq_boot_state_measure(&config, &result);
+
+    s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
+    s_assert_non_null(s, result);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_PARSE_FAILED);
+
+    vantaq_measurement_result_destroy(result);
+}
+
+static void test_boot_state_empty_rollback_value_rejected(void **state) {
+    struct BootStateMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+    const unsigned char content[]            = "secure_boot=enabled\n"
+                                               "boot_mode=normal\n"
+                                               "rollback_detected=\n";
+
+    assert_int_equal(write_file(s->boot_state_path, content, sizeof(content) - 1), 0);
+    fill_measurement_config(&config, s->boot_state_path, 1024);
+
+    enum vantaq_boot_state_status status = vantaq_boot_state_measure(&config, &result);
+
+    s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
+    s_assert_non_null(s, result);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_PARSE_FAILED);
 
     vantaq_measurement_result_destroy(result);
 }
@@ -157,7 +199,7 @@ static void test_boot_state_malformed_line(void **state) {
     s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
     s_assert_non_null(s, result);
     s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
-                       MEASUREMENT_READ_FAILED);
+                       MEASUREMENT_PARSE_FAILED);
 
     vantaq_measurement_result_destroy(result);
 }
@@ -176,7 +218,7 @@ static void test_boot_state_missing_required_keys(void **state) {
     s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
     s_assert_non_null(s, result);
     s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
-                       MEASUREMENT_READ_FAILED);
+                       MEASUREMENT_PARSE_FAILED);
 
     vantaq_measurement_result_destroy(result);
 }
@@ -242,10 +284,34 @@ static void test_boot_state_file_too_large(void **state) {
     vantaq_measurement_result_destroy(result);
 }
 
+static void test_boot_state_rejects_delimiter_injection(void **state) {
+    struct BootStateMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+    const unsigned char content[]            = "secure_boot=enabled;injected=true\n"
+                                               "boot_mode=normal\n";
+
+    assert_int_equal(write_file(s->boot_state_path, content, sizeof(content) - 1), 0);
+    fill_measurement_config(&config, s->boot_state_path, 1024);
+
+    enum vantaq_boot_state_status status = vantaq_boot_state_measure(&config, &result);
+
+    s_assert_int_equal(s, status, VANTAQ_BOOT_STATE_ERR_PARSE_FAILED);
+    s_assert_non_null(s, result);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_PARSE_FAILED);
+
+    vantaq_measurement_result_destroy(result);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_boot_state_success, suite_setup, suite_teardown),
-        cmocka_unit_test_setup_teardown(test_boot_state_unknown_keys_ignored, suite_setup,
+        cmocka_unit_test_setup_teardown(test_boot_state_unknown_keys_rejected, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_boot_state_duplicate_key_rejected, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_boot_state_empty_rollback_value_rejected, suite_setup,
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_boot_state_missing_source, suite_setup,
                                         suite_teardown),
@@ -257,6 +323,8 @@ int main(void) {
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_boot_state_invalid_args, suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_boot_state_file_too_large, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_boot_state_rejects_delimiter_injection, suite_setup,
                                         suite_teardown),
     };
 

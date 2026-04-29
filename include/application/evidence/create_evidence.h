@@ -30,8 +30,21 @@ typedef enum {
     VANTAQ_APP_EVIDENCE_ERR_CLAIM_NOT_ALLOWED = 12,
     VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_SOURCE_NOT_FOUND = 13,
     VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED = 14,
-    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED = 15
+    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_HASH_FAILED = 15,
+    VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE = 16,
+    VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_PARSE_FAILED = 17
 } vantaq_app_evidence_err_t;
+
+/**
+ * @brief Application context for evidence creation (addresses Rule 4.1).
+ */
+struct vantaq_app_evidence_context {
+    struct vantaq_challenge_store *store;
+    struct vantaq_latest_evidence_store *latest_store;
+    const struct vantaq_runtime_config *runtime_config;
+    const vantaq_device_key_t *device_key;
+    int64_t current_time_unix;
+};
 
 struct vantaq_create_evidence_req {
     const char *challenge_id;
@@ -50,13 +63,9 @@ struct vantaq_create_evidence_res {
  * @brief Orchestrate evidence creation: validate challenge, build evidence, and sign it.
  */
 vantaq_app_evidence_err_t vantaq_app_create_evidence(
-    struct vantaq_challenge_store *store,
-    struct vantaq_latest_evidence_store *latest_store,
-    const struct vantaq_runtime_config *runtime_config,
-    const vantaq_device_key_t *device_key,
+    const struct vantaq_app_evidence_context *ctx,
     const char *verifier_id,
     const struct vantaq_create_evidence_req *req,
-    int64_t current_time_unix,
     struct vantaq_create_evidence_res *out_res
 );
 

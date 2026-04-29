@@ -16,9 +16,11 @@ typedef enum {
 } vantaq_measurement_status_t;
 
 typedef enum {
+    MEASUREMENT_INVALID = -1,
     MEASUREMENT_OK = 0,
     MEASUREMENT_SOURCE_NOT_FOUND,
     MEASUREMENT_READ_FAILED,
+    MEASUREMENT_PARSE_FAILED,
     MEASUREMENT_HASH_FAILED,
     MEASUREMENT_UNSUPPORTED_CLAIM
 } vantaq_measurement_error_code_t;

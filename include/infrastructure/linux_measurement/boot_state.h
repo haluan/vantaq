@@ -7,6 +7,10 @@
 #include "domain/measurement/measurement.h"
 #include "infrastructure/config_loader.h"
 
+#define VANTAQ_BOOT_STATE_KEY_SECURE_BOOT "secure_boot"
+#define VANTAQ_BOOT_STATE_KEY_BOOT_MODE "boot_mode"
+#define VANTAQ_BOOT_STATE_KEY_ROLLBACK_DETECTED "rollback_detected"
+
 enum vantaq_boot_state_status {
     VANTAQ_BOOT_STATE_OK = 0,
     VANTAQ_BOOT_STATE_ERR_INVALID_ARG,

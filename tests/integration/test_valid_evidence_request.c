@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
+#include "domain/measurement/supported_claims.h"
 #include "infrastructure/memory/zero_struct.h"
 #include "test_server_harness.h"
 
@@ -137,8 +138,9 @@ static void test_valid_evidence_request_success(void **state) {
 
     // 2. Get Evidence
     char evidence_req[512];
-    snprintf(evidence_req, sizeof(evidence_req), "{\"challenge_id\":\"%s\",\"nonce\":\"%s\"}",
-             challenge_id, nonce);
+    snprintf(evidence_req, sizeof(evidence_req),
+             "{\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"claims\":[\"%s\"]}", challenge_id, nonce,
+             VANTAQ_CLAIM_DEVICE_IDENTITY);
 
     rc = curl_mtls_post(s->server.port, "/v1/attestation/evidence", evidence_req, body,
                         sizeof(body));

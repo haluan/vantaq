@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "infrastructure/crypto/device_key_loader.h"
+#include "infrastructure/memory/zero_struct.h"
+#include "internal/macros.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -9,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ER_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 #define VANTAQ_KEY_FILE_MAX_BYTES (64U * 1024U)
 
 struct vantaq_device_key_t {
@@ -18,13 +19,6 @@ struct vantaq_device_key_t {
     char *public_pem;
     size_t public_pem_len;
 };
-
-static void secure_zero_memory(void *ptr, size_t size) {
-    volatile unsigned char *p = ptr;
-    while (size--) {
-        *p++ = 0;
-    }
-}
 
 static bool has_pem_markers(const char *content, const char *label) {
     char begin_marker[64];
@@ -55,7 +49,9 @@ static vantaq_key_err_t validate_pem_format(const char *private_pem, const char 
     return VANTAQ_KEY_OK;
 }
 
-static vantaq_key_err_t read_file_to_string(const char *path, char **out_content, size_t *out_len) {
+static vantaq_key_err_t filesystem_read_file(void *ctx, const char *path, char **out_content,
+                                             size_t *out_len) {
+    (void)ctx;
     if (!path || !out_content)
         return VANTAQ_KEY_ERR_INVALID_ARG;
 
@@ -120,11 +116,15 @@ cleanup:
     return err;
 }
 
-vantaq_key_err_t vantaq_device_key_load(const char *private_key_path, const char *public_key_path,
+vantaq_key_err_t vantaq_device_key_load(const struct vantaq_key_reader_vtable *reader,
+                                        const char *private_key_path, const char *public_key_path,
                                         vantaq_device_key_t **out_key) {
     if (!private_key_path || !public_key_path || !out_key) {
         return VANTAQ_KEY_ERR_INVALID_ARG;
     }
+
+    struct vantaq_key_reader_vtable default_reader = {filesystem_read_file, NULL};
+    const struct vantaq_key_reader_vtable *r       = reader ? reader : &default_reader;
 
     vantaq_device_key_t *key = malloc(sizeof(vantaq_device_key_t));
     if (!key)
@@ -132,11 +132,11 @@ vantaq_key_err_t vantaq_device_key_load(const char *private_key_path, const char
     ER_ZERO_STRUCT(*key);
 
     vantaq_key_err_t err =
-        read_file_to_string(private_key_path, &key->private_pem, &key->private_pem_len);
+        r->read_file(r->ctx, private_key_path, &key->private_pem, &key->private_pem_len);
     if (err != VANTAQ_KEY_OK)
         goto error;
 
-    err = read_file_to_string(public_key_path, &key->public_pem, &key->public_pem_len);
+    err = r->read_file(r->ctx, public_key_path, &key->public_pem, &key->public_pem_len);
     if (err != VANTAQ_KEY_OK)
         goto error;
 
@@ -156,7 +156,7 @@ void vantaq_device_key_destroy(vantaq_device_key_t *key) {
     if (key) {
         if (key->private_pem) {
             // Securely wipe the private key from memory before freeing.
-            secure_zero_memory(key->private_pem, key->private_pem_len + 1);
+            vantaq_explicit_bzero(key->private_pem, key->private_pem_len + 1);
             free(key->private_pem);
         }
         if (key->public_pem) {

@@ -148,5 +148,3 @@ void vantaq_evidence_canonical_destroy(char *buffer) {
         free(buffer);
     }
 }
-
-void vantaq_evidence_canonical_free(char *buffer) { vantaq_evidence_canonical_destroy(buffer); }

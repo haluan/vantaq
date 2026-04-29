@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "domain/evidence/evidence.h"
+#include "internal/macros.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#define ER_ZERO_STRUCT(s) memset(&(s), 0, sizeof(s))
 
 struct vantaq_evidence {
     char evidence_id[VANTAQ_EVIDENCE_ID_MAX];
@@ -26,6 +25,20 @@ static void secure_zero_memory(void *ptr, size_t size) {
     while (size--) {
         *p++ = 0;
     }
+}
+
+static void copy_text_bounded(char *dst, size_t dst_size, const char *src) {
+    size_t src_len;
+    size_t copy_len;
+
+    if (dst == NULL || src == NULL || dst_size == 0) {
+        return;
+    }
+
+    src_len  = strlen(src);
+    copy_len = src_len < (dst_size - 1) ? src_len : (dst_size - 1);
+    memcpy(dst, src, copy_len);
+    dst[copy_len] = '\0';
 }
 
 static vantaq_evidence_err_t validate_text_field(const char *value, size_t max_size) {
@@ -110,16 +123,16 @@ vantaq_evidence_err_t vantaq_evidence_create(const char *evidence_id, const char
 
     ER_ZERO_STRUCT(*ev);
 
-    strncpy(ev->evidence_id, evidence_id, VANTAQ_EVIDENCE_ID_MAX - 1);
-    strncpy(ev->device_id, device_id, VANTAQ_DEVICE_ID_MAX - 1);
-    strncpy(ev->verifier_id, verifier_id, VANTAQ_VERIFIER_ID_MAX - 1);
-    strncpy(ev->challenge_id, challenge_id, VANTAQ_CHALLENGE_ID_MAX - 1);
-    strncpy(ev->nonce, nonce, VANTAQ_NONCE_MAX - 1);
-    strncpy(ev->purpose, purpose, VANTAQ_PURPOSE_MAX - 1);
+    copy_text_bounded(ev->evidence_id, sizeof(ev->evidence_id), evidence_id);
+    copy_text_bounded(ev->device_id, sizeof(ev->device_id), device_id);
+    copy_text_bounded(ev->verifier_id, sizeof(ev->verifier_id), verifier_id);
+    copy_text_bounded(ev->challenge_id, sizeof(ev->challenge_id), challenge_id);
+    copy_text_bounded(ev->nonce, sizeof(ev->nonce), nonce);
+    copy_text_bounded(ev->purpose, sizeof(ev->purpose), purpose);
     ev->issued_at_unix = issued_at_unix;
-    strncpy(ev->claims, claims, VANTAQ_CLAIMS_MAX - 1);
-    strncpy(ev->signature_alg, signature_alg, VANTAQ_SIGNATURE_ALG_MAX - 1);
-    strncpy(ev->signature, signature, VANTAQ_SIGNATURE_MAX - 1);
+    copy_text_bounded(ev->claims, sizeof(ev->claims), claims);
+    copy_text_bounded(ev->signature_alg, sizeof(ev->signature_alg), signature_alg);
+    copy_text_bounded(ev->signature, sizeof(ev->signature), signature);
 
     *out_evidence = ev;
     return VANTAQ_EVIDENCE_OK;
@@ -170,4 +183,21 @@ const char *vantaq_evidence_get_signature_alg(const struct vantaq_evidence *evid
 
 const char *vantaq_evidence_get_signature(const struct vantaq_evidence *evidence) {
     return evidence ? evidence->signature : NULL;
+}
+
+vantaq_evidence_err_t vantaq_evidence_update_signature(struct vantaq_evidence *evidence,
+                                                       const char *signature) {
+    vantaq_evidence_err_t err = VANTAQ_EVIDENCE_OK;
+
+    if (evidence == NULL || signature == NULL) {
+        return VANTAQ_EVIDENCE_ERR_INVALID_ARG;
+    }
+
+    err = validate_text_field(signature, VANTAQ_SIGNATURE_MAX);
+    if (err != VANTAQ_EVIDENCE_OK) {
+        return err;
+    }
+
+    copy_text_bounded(evidence->signature, sizeof(evidence->signature), signature);
+    return VANTAQ_EVIDENCE_OK;
 }

@@ -31,6 +31,7 @@ struct vantaq_test_server_handle {
     char cfg_path[256];
     char audit_path[256];
     char stderr_path[256];
+    char tls_key_path[256];
 };
 
 int reserve_ephemeral_port(void);

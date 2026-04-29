@@ -35,6 +35,7 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/evidence/evidence_canonical.c
   src/domain/measurement/measurement.c
   src/domain/measurement/supported_claims.c
+  src/infrastructure/linux_measurement/file_sha256_measurement.c
   src/infrastructure/linux_measurement/firmware_hash.c
   src/infrastructure/linux_measurement/config_hash.c
   src/infrastructure/linux_measurement/agent_integrity.c
@@ -269,6 +270,11 @@ if(VANTAQ_BUILD_TESTS)
   add_executable(test_boot_state_measurement tests/unit/test_boot_state_measurement.c)
   target_link_libraries(test_boot_state_measurement PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_boot_state_measurement COMMAND test_boot_state_measurement)
+
+  add_executable(test_json_utils tests/unit/test_json_utils.c)
+  target_include_directories(test_json_utils PRIVATE src/infrastructure/http_server)
+  target_link_libraries(test_json_utils PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_json_utils COMMAND test_json_utils)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

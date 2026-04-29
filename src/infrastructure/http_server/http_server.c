@@ -605,6 +605,16 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         return 405;
     }
 
+    if (strcmp(path, "/v1/attestation/latest-evidence") == 0) {
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
+    }
+
     return 404;
 }
 
@@ -876,6 +886,8 @@ static void handle_client(struct vantaq_http_connection *connection,
             rc = send_post_challenge_response(connection, health_ctx, &request_ctx, req_buf);
         } else if (status_code == 200 && strcmp(path, "/v1/attestation/evidence") == 0) {
             rc = send_post_evidence_response(connection, health_ctx, &request_ctx, req_buf);
+        } else if (status_code == 200 && strcmp(path, "/v1/attestation/latest-evidence") == 0) {
+            rc = send_get_latest_evidence_response(connection, health_ctx, &request_ctx);
         } else {
             rc = send_health_response(connection, health_ctx);
         }
@@ -1194,6 +1206,18 @@ cleanup:
     return status;
 }
 
+/**
+ * @brief Main HTTP server loop.
+ *
+ * This implementation uses a single-threaded, synchronous accept loop. Each
+ * connection is handled to completion before the next client is accepted.
+ * This design is optimized for low-concurrency embedded use-cases where
+ * predictable resource usage is more critical than high throughput.
+ *
+ * The loop exits when g_stop_requested is set by a signal handler. Note that
+ * shutdown may be delayed by up to VANTAQ_HTTP_RECV_TIMEOUT_SECONDS while
+ * the current connection finishes its final I/O operation.
+ */
 const char *vantaq_http_server_status_text(enum vantaq_http_server_status status) {
     switch (status) {
     case VANTAQ_HTTP_SERVER_STATUS_OK:

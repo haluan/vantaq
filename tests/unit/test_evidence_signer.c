@@ -72,7 +72,7 @@ static int suite_setup(void **state) {
     if (system(cmd) != 0)
         return -1;
 
-    vantaq_key_err_t kerr = vantaq_device_key_load(s->priv_path, s->pub_path, &s->key);
+    vantaq_key_err_t kerr = vantaq_device_key_load(NULL, s->priv_path, s->pub_path, &s->key);
     if (kerr != VANTAQ_KEY_OK)
         return -1;
 

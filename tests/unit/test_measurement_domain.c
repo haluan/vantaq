@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "domain/measurement/measurement.h"
+#include "domain/measurement/supported_claims.h"
 
 #include <setjmp.h>
 #include <stdarg.h>
@@ -162,10 +163,66 @@ static void test_measurement_missing_fields_rejected(void **state) {
     s_assert_null(s, out);
 }
 
+static void test_measurement_whitespace_only_fields_rejected(void **state) {
+    struct MeasurementDomainTestSuite *s  = *state;
+    struct vantaq_measurement_result *out = NULL;
+
+    vantaq_measurement_model_err_t err =
+        vantaq_measurement_result_create_success("   ", "value", "/path", &out);
+    s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_ERR_MISSING_FIELD);
+    s_assert_null(s, out);
+
+    err = vantaq_measurement_result_create_success("claim", "\t", "/path", &out);
+    s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_ERR_MISSING_FIELD);
+    s_assert_null(s, out);
+
+    err = vantaq_measurement_result_create_error("claim", "   ", MEASUREMENT_READ_FAILED, &out);
+    s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_ERR_MISSING_FIELD);
+    s_assert_null(s, out);
+
+    (void)s;
+}
+
 static void test_measurement_destroy_null_safe(void **state) {
     struct MeasurementDomainTestSuite *s = *state;
     vantaq_measurement_result_destroy(NULL);
     s_assert_true(s, 1);
+}
+
+static void test_measurement_accessors_null_safe(void **state) {
+    struct MeasurementDomainTestSuite *s = *state;
+
+    s_assert_string_equal(s, vantaq_measurement_result_get_claim_name(NULL), "");
+    s_assert_string_equal(s, vantaq_measurement_result_get_value(NULL), "");
+    s_assert_string_equal(s, vantaq_measurement_result_get_source_path(NULL), "");
+    s_assert_int_equal(s, vantaq_measurement_result_get_status(NULL),
+                       VANTAQ_MEASUREMENT_STATUS_ERROR);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(NULL), MEASUREMENT_INVALID);
+}
+
+static void test_supported_claim_registry(void **state) {
+    char too_long[VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 3];
+
+    (void)state;
+
+    assert_true(VANTAQ_CLAIM_NAME_MAX == VANTAQ_SUPPORTED_CLAIM_NAME_MAX);
+
+    assert_true(vantaq_supported_claim_is_known(VANTAQ_CLAIM_BOOT_STATE));
+    assert_int_equal(vantaq_supported_claim_lookup(VANTAQ_CLAIM_BOOT_STATE),
+                     VANTAQ_SUPPORTED_CLAIM_ID_BOOT_STATE);
+    assert_int_equal(vantaq_supported_claim_lookup(VANTAQ_CLAIM_FIRMWARE_HASH),
+                     VANTAQ_SUPPORTED_CLAIM_ID_FIRMWARE_HASH);
+
+    assert_false(vantaq_supported_claim_is_known("Firmware_Hash"));
+    assert_false(vantaq_supported_claim_is_known(" firmware_hash"));
+    assert_false(vantaq_supported_claim_is_known(NULL));
+    assert_false(vantaq_supported_claim_is_known(""));
+    assert_int_equal(vantaq_supported_claim_lookup("unknown_claim_xyz"),
+                     VANTAQ_SUPPORTED_CLAIM_ID_UNKNOWN);
+
+    memset(too_long, 'z', (size_t)VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1U);
+    too_long[VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1] = '\0';
+    assert_false(vantaq_supported_claim_is_known(too_long));
 }
 
 static void test_measurement_error_rejects_ok_code(void **state) {
@@ -194,8 +251,13 @@ int main(void) {
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_measurement_missing_fields_rejected, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_measurement_whitespace_only_fields_rejected,
+                                        suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_measurement_destroy_null_safe, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_measurement_accessors_null_safe, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test(test_supported_claim_registry),
         cmocka_unit_test_setup_teardown(test_measurement_error_rejects_ok_code, suite_setup,
                                         suite_teardown),
     };

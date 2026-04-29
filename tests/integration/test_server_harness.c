@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "test_server_harness.h"
+#include "infrastructure/config_loader.h"
 #include "infrastructure/memory/zero_struct.h"
 
 #include <arpa/inet.h>
@@ -15,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -50,9 +52,14 @@ static int first_available_port(void) {
 }
 
 int reserve_ephemeral_port(void) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int direct_port = first_available_port();
+    int sock        = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
+
+    if (direct_port > 0) {
+        return direct_port;
+    }
 
     if (sock < 0) {
         return -1;
@@ -78,7 +85,7 @@ int reserve_ephemeral_port(void) {
         return (int)ntohs(addr.sin_port);
     }
 
-    return first_available_port();
+    return -1;
 }
 
 int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow_all,
@@ -189,8 +196,12 @@ int make_temp_audit_path(char *path_out, size_t path_out_size) {
 
 int wait_for_server_ready(int port, int timeout_ms) {
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
-    int attempts          = timeout_ms / 50;
+    int attempts          = 1;
     int i;
+
+    if (timeout_ms > 50) {
+        attempts += (timeout_ms / 50);
+    }
 
     for (i = 0; i < attempts; i++) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -214,7 +225,9 @@ int wait_for_server_ready(int port, int timeout_ms) {
         }
 
         close(sock);
-        nanosleep(&delay, NULL);
+        if (i + 1 < attempts) {
+            nanosleep(&delay, NULL);
+        }
     }
 
     return -1;
@@ -313,6 +326,10 @@ static void classify_setup_failure(const char *stderr_text, int child_status, co
             reason = "config_invalid";
         } else if (strstr(stderr_text, "tls init failed") != NULL) {
             reason = "config_invalid";
+        } else if (strstr(stderr_text, "override is not allowed") != NULL) {
+            reason = "config_invalid";
+        } else if (strstr(stderr_text, "config path is not a regular file") != NULL) {
+            reason = "config_invalid";
         }
     }
 
@@ -329,8 +346,9 @@ static void classify_setup_failure(const char *stderr_text, int child_status, co
     }
 }
 
-static int write_server_config(const struct vantaq_test_server_opts *opts, int port, char *path_out,
-                               size_t path_out_size) {
+static int write_server_config(const struct vantaq_test_server_opts *opts, int port,
+                               const char *test_tls_key_path, const char *audit_log_path,
+                               char *path_out, size_t path_out_size) {
     char template[] = "/tmp/vantaq_it_XXXXXX.yaml";
     char yaml_buf[4096];
     const char *apis;
@@ -391,6 +409,9 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                            "network_access:\n"
                            "  allowed_subnets: [%s]\n"
                            "  dev_allow_all_networks: %s\n"
+                           "audit:\n"
+                           "  max_bytes: 1048576\n"
+                           "  path: %s\n"
                            "%s";
 
     apis = opts->allowed_apis_yaml != NULL ? opts->allowed_apis_yaml : "      - GET /v1/health\n";
@@ -417,16 +438,16 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
         return -1;
     }
 
-    n = snprintf(yaml_buf, sizeof(yaml_buf), yaml_fmt, port, opts->tls_enabled ? "true" : "false",
-                 cert_path, opts->tls_enabled ? "config/certs/device-server.key" : "/etc/hosts",
-                 opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
-                 opts->require_client_cert ? "true" : "false", apis, supported_claims_yaml,
-                 measurement_firmware_path, measurement_security_config_path,
-                 measurement_agent_binary_path, measurement_boot_state_path, allowed_subnets,
-                 dev_allow_all,
-                 opts->include_challenge
-                     ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
-                     : "");
+    n = snprintf(
+        yaml_buf, sizeof(yaml_buf), yaml_fmt, port, opts->tls_enabled ? "true" : "false", cert_path,
+        opts->tls_enabled ? "config/certs/device-server.key" : test_tls_key_path,
+        opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
+        opts->require_client_cert ? "true" : "false", apis, supported_claims_yaml,
+        measurement_firmware_path, measurement_security_config_path, measurement_agent_binary_path,
+        measurement_boot_state_path, allowed_subnets, dev_allow_all, audit_log_path,
+        opts->include_challenge
+            ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
+            : "");
     if (n <= 0 || (size_t)n >= sizeof(yaml_buf)) {
         close(fd);
         unlink(template);
@@ -468,6 +489,36 @@ static int make_temp_log_path(char *path_out, size_t path_out_size) {
     return 0;
 }
 
+static int make_temp_private_key_path(char *path_out, size_t path_out_size) {
+    char template[]                 = "/tmp/vantaq_it_key_XXXXXX.pem";
+    int fd                          = mkstemps(template, 4);
+    static const char k_dummy_key[] = "dummy-private-key-for-tests\n";
+
+    if (fd < 0) {
+        return -1;
+    }
+
+    if (write(fd, k_dummy_key, sizeof(k_dummy_key) - 1) != (ssize_t)(sizeof(k_dummy_key) - 1)) {
+        close(fd);
+        unlink(template);
+        return -1;
+    }
+    close(fd);
+
+    if (chmod(template, S_IRUSR | S_IWUSR) != 0) {
+        unlink(template);
+        return -1;
+    }
+
+    if (strlen(template) >= path_out_size) {
+        unlink(template);
+        return -1;
+    }
+
+    strcpy(path_out, template);
+    return 0;
+}
+
 int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
                              struct vantaq_test_server_handle *handle, char *err, size_t err_len) {
     struct vantaq_test_server_opts defaults;
@@ -490,8 +541,8 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     defaults.measurement_security_config_path = "/etc/vantaqd/security.conf";
     defaults.measurement_agent_binary_path    = "/usr/local/bin/vantaqd";
     defaults.measurement_boot_state_path      = "/run/vantaqd/boot_state";
-    defaults.startup_timeout_ms               = 4000;
-    defaults.max_start_retries                = 5;
+    defaults.startup_timeout_ms               = 0;
+    defaults.max_start_retries                = 1;
 
     if (opts->allowed_subnets == NULL) {
         defaults.allowed_subnets = "127.0.0.1/32";
@@ -522,15 +573,8 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     defaults.tls_enabled         = opts->tls_enabled;
     defaults.require_client_cert = opts->require_client_cert;
     defaults.include_challenge   = opts->include_challenge;
-    if (opts->startup_timeout_ms > 0) {
-        defaults.startup_timeout_ms = opts->startup_timeout_ms;
-    }
-    if (opts->max_start_retries > 0) {
-        defaults.max_start_retries = opts->max_start_retries;
-    }
-
     VANTAQ_ZERO_STRUCT(*handle);
-    retries = defaults.max_start_retries;
+    retries = 1;
 
     for (attempt = 0; attempt < retries; attempt++) {
         int port;
@@ -546,8 +590,11 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
             return -1;
         }
 
-        if (write_server_config(&defaults, port, handle->cfg_path, sizeof(handle->cfg_path)) != 0 ||
+        if (make_temp_private_key_path(handle->tls_key_path, sizeof(handle->tls_key_path)) != 0 ||
             make_temp_audit_path(handle->audit_path, sizeof(handle->audit_path)) != 0 ||
+            strlen(handle->audit_path) >= VANTAQ_MAX_FIELD_LEN ||
+            write_server_config(&defaults, port, handle->tls_key_path, handle->audit_path,
+                                handle->cfg_path, sizeof(handle->cfg_path)) != 0 ||
             make_temp_log_path(handle->stderr_path, sizeof(handle->stderr_path)) != 0) {
             if (err != NULL && err_len > 0) {
                 (void)snprintf(err, err_len, "config_invalid: failed to create temp files");
@@ -572,10 +619,6 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
                 (void)dup2(stderr_fd, STDOUT_FILENO);
                 (void)dup2(stderr_fd, STDERR_FILENO);
                 close(stderr_fd);
-            }
-
-            if (setenv("VANTAQ_AUDIT_LOG_PATH", handle->audit_path, 1) != 0) {
-                _exit(126);
             }
 
             execl("./bin/vantaqd", "vantaqd", "--config", handle->cfg_path, (char *)NULL);
@@ -627,6 +670,9 @@ void vantaq_test_server_stop(struct vantaq_test_server_handle *handle) {
     }
     if (handle->stderr_path[0] != '\0') {
         (void)unlink(handle->stderr_path);
+    }
+    if (handle->tls_key_path[0] != '\0') {
+        (void)unlink(handle->tls_key_path);
     }
 
     VANTAQ_ZERO_STRUCT(*handle);

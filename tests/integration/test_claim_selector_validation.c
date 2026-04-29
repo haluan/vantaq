@@ -238,7 +238,7 @@ static void test_unknown_claim_returns_400(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "UNSUPPORTED_CLAIM"));
+    s_assert_non_null(s, strstr(body, "unsupported_claim"));
 }
 
 static void test_duplicate_claim_returns_400(void **state) {
@@ -266,7 +266,7 @@ static void test_duplicate_claim_returns_400(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "INVALID_CLAIMS"));
+    s_assert_non_null(s, strstr(body, "invalid_claims"));
 }
 
 static void test_too_many_claims_returns_400(void **state) {
@@ -295,7 +295,7 @@ static void test_too_many_claims_returns_400(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "INVALID_CLAIMS"));
+    s_assert_non_null(s, strstr(body, "invalid_claims"));
 }
 
 static void test_known_disallowed_claim_returns_403(void **state) {
@@ -368,7 +368,7 @@ static void test_known_disallowed_claim_returns_403(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 403);
-    s_assert_non_null(s, strstr(body, "CLAIM_NOT_ALLOWED"));
+    s_assert_non_null(s, strstr(body, "claim_not_allowed"));
 
     vantaq_test_server_stop(&deny_server);
     unlink(firmware_path);

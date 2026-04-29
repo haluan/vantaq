@@ -13,6 +13,7 @@
 #include "infrastructure/memory/zero_struct.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -20,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define VANTAQ_USAGE "Usage: vantaqd [--version] [--config <path>]\n"
 #define VANTAQ_DEFAULT_AUDIT_LOG_PATH "/var/lib/vantaqd/audit.log"
@@ -49,7 +52,7 @@ struct vantaq_app_context {
     const char *config_path;
     bool config_path_set;
     const char *audit_log_path;
-    bool audit_log_path_env_set;
+    bool audit_log_path_owned;
     size_t audit_log_max_bytes;
     bool audit_log_max_bytes_env_set;
 
@@ -184,8 +187,8 @@ static bool vantaq_app_parse_cli(struct vantaq_app_context *ctx, int argc, char 
 }
 
 /**
- * Resolves audit log configuration from environment and config file.
- * Addresses S-1, S-2, S-4, C-2, and E-3.
+ * Resolves audit log configuration from environment.
+ * Security policy: audit log path is not overrideable via environment.
  */
 static bool vantaq_app_resolve_audit(struct vantaq_app_context *ctx) {
     const char *env_path;
@@ -195,45 +198,10 @@ static bool vantaq_app_resolve_audit(struct vantaq_app_context *ctx) {
     /* Handle Path */
     env_path = getenv("VANTAQ_AUDIT_LOG_PATH");
     if (env_path != NULL && env_path[0] != '\0') {
-        if (strncmp(env_path, "/tmp/", 5) != 0) {
-            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
-                               "error: VANTAQ_AUDIT_LOG_PATH must be under /tmp\n");
-            ctx->exit_code = 64;
-            return false;
-        }
-        if (strlen(env_path) >= PATH_MAX) {
-            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
-                               "error: VANTAQ_AUDIT_LOG_PATH exceeds maximum path length\n");
-            ctx->exit_code = 64;
-            return false;
-        }
-        ctx->audit_log_path = strdup(env_path);
-        if (ctx->audit_log_path == NULL) {
-            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
-                               "error: out of memory for audit path\n");
-            ctx->exit_code = 70;
-            return false;
-        }
-        ctx->audit_log_path_env_set = true;
-
-        /* Sanitize for warning message (S-2, E-3) */
-        {
-            char warning[1024];
-            char sanitized[PATH_MAX];
-            size_t j, k = 0;
-            for (j = 0; env_path[j] != '\0' && k < sizeof(sanitized) - 1; j++) {
-                unsigned char c = (unsigned char)env_path[j];
-                sanitized[k++]  = (c >= 32 && c <= 126) ? (char)c : '?';
-            }
-            sanitized[k] = '\0';
-            n            = snprintf(warning, sizeof(warning),
-                                    "SECURITY WARNING: Audit log path redirected by environment "
-                                    "variable: %s\n",
-                                    sanitized);
-            if (n > 0 && (size_t)n < sizeof(warning)) {
-                (void)vantaq_write(ctx->io->write_err, ctx->io->ctx, warning);
-            }
-        }
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                           "error: VANTAQ_AUDIT_LOG_PATH override is not allowed\n");
+        ctx->exit_code = 64;
+        return false;
     }
 
     /* Handle Max Bytes */
@@ -276,6 +244,8 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
     const struct vantaq_runtime_config *config;
     char output[512];
     int n;
+    int cfg_fd;
+    struct stat cfg_st;
 
     ctx->loader = vantaq_config_loader_create();
     if (ctx->loader == NULL) {
@@ -284,7 +254,31 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
         return false;
     }
 
-    status = vantaq_config_loader_load(ctx->loader, ctx->config_path);
+    cfg_fd = open(ctx->config_path, O_RDONLY
+#ifdef O_CLOEXEC
+                                        | O_CLOEXEC
+#endif
+#ifdef O_NOFOLLOW
+                                        | O_NOFOLLOW
+#endif
+    );
+    if (cfg_fd < 0) {
+        n = snprintf(output, sizeof(output), "config load failed: unable to open config file: %s\n",
+                     ctx->config_path);
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                           (n > 0 && (size_t)n < sizeof(output)) ? output : "config load failed\n");
+        ctx->exit_code = 78;
+        return false;
+    }
+    if (fstat(cfg_fd, &cfg_st) != 0 || !S_ISREG(cfg_st.st_mode)) {
+        (void)close(cfg_fd);
+        (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                           "config load failed: config path is not a regular file\n");
+        ctx->exit_code = 78;
+        return false;
+    }
+    status = vantaq_config_loader_load_fd(ctx->loader, cfg_fd, ctx->config_path);
+    (void)close(cfg_fd);
     if (status != VANTAQ_CONFIG_STATUS_OK) {
         const char *err = vantaq_config_loader_last_error(ctx->loader);
         n               = snprintf(output, sizeof(output), "config load failed: %s\n",
@@ -304,8 +298,10 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
             (config_max_bytes > 0) ? config_max_bytes : VANTAQ_DEFAULT_AUDIT_LOG_MAX_BYTES;
     }
 
-    if (!ctx->audit_log_path_env_set) {
+    {
         const char *config_path_val = vantaq_runtime_audit_log_path(config);
+        const char *resolved_path   = VANTAQ_DEFAULT_AUDIT_LOG_PATH;
+        char *owned_path;
         if (config_path_val != NULL && config_path_val[0] != '\0') {
             if (strlen(config_path_val) >= PATH_MAX) {
                 (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
@@ -313,10 +309,17 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
                 ctx->exit_code = 78;
                 return false;
             }
-            ctx->audit_log_path = config_path_val;
-        } else {
-            ctx->audit_log_path = VANTAQ_DEFAULT_AUDIT_LOG_PATH;
+            resolved_path = config_path_val;
         }
+        owned_path = strdup(resolved_path);
+        if (owned_path == NULL) {
+            (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
+                               "error: out of memory for audit path\n");
+            ctx->exit_code = 70;
+            return false;
+        }
+        ctx->audit_log_path       = owned_path;
+        ctx->audit_log_path_owned = true;
     }
 
     /* Collect capabilities */
@@ -362,7 +365,7 @@ static bool vantaq_app_load_and_collect(struct vantaq_app_context *ctx) {
     {
         const char *priv_path = vantaq_runtime_device_priv_key_path(config);
         const char *pub_path  = vantaq_runtime_device_pub_key_path(config);
-        vantaq_key_err_t kerr = vantaq_device_key_load(priv_path, pub_path, &ctx->device_key);
+        vantaq_key_err_t kerr = vantaq_device_key_load(NULL, priv_path, pub_path, &ctx->device_key);
         if (kerr != VANTAQ_KEY_OK) {
             (void)vantaq_write(ctx->io->write_err, ctx->io->ctx,
                                "config load failed: failed to load device key\n");
@@ -497,7 +500,7 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
     }
 
 cleanup:
-    if (ctx.audit_log_path_env_set) {
+    if (ctx.audit_log_path_owned) {
         free((void *)ctx.audit_log_path);
     }
     if (ctx.store != NULL) {

@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -116,10 +117,8 @@ static void test_startup_with_valid_config_succeeds(void **state) {
     child = fork();
     assert_true(child >= 0);
     if (child == 0) {
-        char env_buf[512];
-        char *envp[] = {env_buf, NULL};
-        snprintf(env_buf, sizeof(env_buf), "VANTAQ_AUDIT_LOG_PATH=%s.audit", config_path);
-        execle("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL, envp);
+        (void)unsetenv("VANTAQ_AUDIT_LOG_PATH");
+        execl("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL);
         _exit(127);
     }
 

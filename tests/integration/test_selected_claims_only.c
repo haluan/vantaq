@@ -375,7 +375,7 @@ static void test_unsupported_claim_returns_400(void **state) {
                                                     &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "UNSUPPORTED_CLAIM"));
+    s_assert_non_null(s, strstr(body, "unsupported_claim"));
 }
 
 int main(void) {

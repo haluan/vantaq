@@ -17,17 +17,27 @@ typedef enum {
     VANTAQ_KEY_ERR_PERMISSION_DENIED = 7
 } vantaq_key_err_t;
 
+typedef vantaq_key_err_t (*vantaq_key_file_reader_fn)(void *ctx, const char *path,
+                                                      char **out_content, size_t *out_len);
+
+struct vantaq_key_reader_vtable {
+    vantaq_key_file_reader_fn read_file;
+    void *ctx;
+};
+
 typedef struct vantaq_device_key_t vantaq_device_key_t;
 
 /**
  * @brief Load device signing key from PEM files.
  * 
+ * @param reader VTable for file reading (addresses Rule 4.1). Use NULL for default filesystem reader.
  * @param private_key_path Path to the private key PEM file.
  * @param public_key_path Path to the public key PEM file.
  * @param out_key Pointer to hold the created device key object.
  * @return vantaq_key_err_t Status code.
  */
-vantaq_key_err_t vantaq_device_key_load(const char *private_key_path,
+vantaq_key_err_t vantaq_device_key_load(const struct vantaq_key_reader_vtable *reader,
+                                        const char *private_key_path,
                                         const char *public_key_path,
                                         vantaq_device_key_t **out_key);
 

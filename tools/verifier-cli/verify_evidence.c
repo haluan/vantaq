@@ -4,6 +4,7 @@
 #include "domain/evidence/evidence.h"
 #include "domain/evidence/evidence_canonical.h"
 #include "infrastructure/crypto/evidence_signer.h"
+
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -107,18 +108,24 @@ static const char *find_object_end(const char *start) {
 }
 
 static char *extract_raw_value(const char *json, const char *key) {
-    size_t key_len = strlen(key);
-    char *search_key = malloc(key_len + 4);
-    if (!search_key) {
+    size_t key_len   = strlen(key);
+    char *quoted_key = malloc(key_len + 3);
+    if (!quoted_key) {
         return NULL;
     }
-    snprintf(search_key, key_len + 4, "\"%s\":", key);
+    snprintf(quoted_key, key_len + 3, "\"%s\"", key);
 
-    const char *p = strstr(json, search_key);
-    free(search_key);
+    const char *p = strstr(json, quoted_key);
+    free(quoted_key);
     if (!p)
         return NULL;
-    p += key_len + 3;
+    p += key_len + 2;
+    p = skip_ws(p);
+
+    if (*p != ':') {
+        return NULL;
+    }
+    p++;
     p = skip_ws(p);
 
     const char *start = p;
@@ -133,7 +140,7 @@ static char *extract_raw_value(const char *json, const char *key) {
         end = find_object_end(start);
     } else {
         end = p;
-        while (*end && !isspace((unsigned char)*end) && *end != ',' && *end != '}')
+        while (*end && !isspace((unsigned char)*end) && *end != ',' && *end != '}' && *end != ']')
             end++;
     }
 
@@ -151,83 +158,60 @@ static char *extract_raw_value(const char *json, const char *key) {
     return val;
 }
 
-int main(int argc, char **argv) {
-    int exit_code = 1;
-    char *json = NULL;
-    char *ev_id = NULL;
-    char *dev_id = NULL;
-    char *ver_id = NULL;
-    char *ch_id = NULL;
-    char *nonce = NULL;
-    char *purpose = NULL;
-    char *timestamp_str = NULL;
-    char *claims = NULL;
-    char *sig_alg = NULL;
-    char *sig_b64 = NULL;
+static int verify_evidence_payload(const char *json, EVP_PKEY *pkey) {
+    int result                       = -1;
+    char *ev_id                      = NULL;
+    char *dev_id                     = NULL;
+    char *ver_id                     = NULL;
+    char *ch_id                      = NULL;
+    char *nonce                      = NULL;
+    char *purpose                    = NULL;
+    char *timestamp_str              = NULL;
+    char *claims                     = NULL;
+    char *sig_alg                    = NULL;
+    char *sig_b64                    = NULL;
     struct vantaq_evidence *evidence = NULL;
-    char *canonical_buf = NULL;
-    size_t canonical_len = 0;
-    BIO *b64_bio = NULL;
-    BIO *mem_bio = NULL;
-    unsigned char *sig = NULL;
-    int sig_len = 0;
-    FILE *key_file = NULL;
-    EVP_PKEY *pkey = NULL;
-    EVP_MD_CTX *ctx = NULL;
+    char *canonical_buf              = NULL;
+    size_t canonical_len             = 0;
+    BIO *b64_bio                     = NULL;
+    BIO *mem_bio                     = NULL;
+    unsigned char *sig               = NULL;
+    EVP_MD_CTX *ctx                  = NULL;
 
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <evidence.json> <public_key.pem>\n", argv[0]);
-        goto cleanup;
-    }
-
-    json = read_file(argv[1]);
-    if (!json) {
-        fprintf(stderr, "Error: Failed to read JSON file (missing/unreadable/too large)\n");
-        goto cleanup;
-    }
-
-    ev_id = extract_raw_value(json, "evidence_id");
-    dev_id = extract_raw_value(json, "device_id");
-    ver_id = extract_raw_value(json, "verifier_id");
-    ch_id = extract_raw_value(json, "challenge_id");
-    nonce = extract_raw_value(json, "nonce");
-    purpose = extract_raw_value(json, "purpose");
+    ev_id         = extract_raw_value(json, "evidence_id");
+    dev_id        = extract_raw_value(json, "device_id");
+    ver_id        = extract_raw_value(json, "verifier_id");
+    ch_id         = extract_raw_value(json, "challenge_id");
+    nonce         = extract_raw_value(json, "nonce");
+    purpose       = extract_raw_value(json, "purpose");
     timestamp_str = extract_raw_value(json, "timestamp");
-    claims = extract_raw_value(json, "claims");
-    sig_alg = extract_raw_value(json, "signature_algorithm");
-    sig_b64 = extract_raw_value(json, "signature");
+    claims        = extract_raw_value(json, "claims");
+    sig_alg       = extract_raw_value(json, "signature_algorithm");
+    sig_b64       = extract_raw_value(json, "signature");
 
-    if (!ev_id) fprintf(stderr, "Error: Missing evidence_id\n");
-    if (!dev_id) fprintf(stderr, "Error: Missing device_id\n");
-    if (!ver_id) fprintf(stderr, "Error: Missing verifier_id\n");
-    if (!ch_id) fprintf(stderr, "Error: Missing challenge_id\n");
-    if (!nonce) fprintf(stderr, "Error: Missing nonce\n");
-    if (!purpose) fprintf(stderr, "Error: Missing purpose\n");
-    if (!timestamp_str) fprintf(stderr, "Error: Missing timestamp\n");
-    if (!claims) fprintf(stderr, "Error: Missing claims\n");
-    if (!sig_alg) fprintf(stderr, "Error: Missing signature_algorithm\n");
-    if (!sig_b64) fprintf(stderr, "Error: Missing signature\n");
-
-    if (!ev_id || !dev_id || !ver_id || !ch_id || !nonce || !purpose || !timestamp_str || !claims || !sig_alg || !sig_b64) {
+    if (!ev_id || !dev_id || !ver_id || !ch_id || !nonce || !purpose || !timestamp_str || !claims ||
+        !sig_alg || !sig_b64) {
+        fprintf(stderr, "Error: Missing required fields in evidence JSON\n");
         goto cleanup;
     }
+
     if (strcmp(sig_alg, SUPPORTED_SIGNATURE_ALG) != 0) {
         fprintf(stderr, "Error: Unsupported signature_algorithm: %s\n", sig_alg);
         goto cleanup;
     }
 
-    errno = 0;
-    char *endptr = NULL;
+    errno           = 0;
+    char *endptr    = NULL;
     long long ts_ll = strtoll(timestamp_str, &endptr, 10);
-    if (errno != 0 || endptr == timestamp_str || (endptr && *skip_ws(endptr) != '\0') || ts_ll <= 0) {
+    if (errno != 0 || endptr == timestamp_str || (endptr && *skip_ws(endptr) != '\0') ||
+        ts_ll <= 0) {
         fprintf(stderr, "Error: Invalid timestamp value\n");
         goto cleanup;
     }
-    int64_t timestamp = (int64_t)ts_ll;
 
-    vantaq_evidence_err_t err = vantaq_evidence_create(
-        ev_id, dev_id, ver_id, ch_id, nonce, purpose,
-        timestamp, claims, sig_alg, sig_b64, &evidence);
+    vantaq_evidence_err_t err =
+        vantaq_evidence_create(ev_id, dev_id, ver_id, ch_id, nonce, purpose, (int64_t)ts_ll, claims,
+                               sig_alg, sig_b64, &evidence);
 
     if (err != VANTAQ_EVIDENCE_OK) {
         fprintf(stderr, "Error: Failed to create evidence object (%d)\n", err);
@@ -241,90 +225,40 @@ int main(int argc, char **argv) {
     }
 
     // Verify Signature
-    // 1. Decode Base64
     b64_bio = BIO_new(BIO_f_base64());
     mem_bio = BIO_new_mem_buf(sig_b64, -1);
-    if (!b64_bio || !mem_bio) {
-        fprintf(stderr, "Error: Failed to initialize base64 decoder\n");
+    if (!b64_bio || !mem_bio)
         goto cleanup;
-    }
     BIO_push(b64_bio, mem_bio);
     mem_bio = NULL;
     BIO_set_flags(b64_bio, BIO_FLAGS_BASE64_NO_NL);
 
     size_t sig_buf_len = strlen(sig_b64);
-    if (sig_buf_len > (size_t)INT_MAX) {
-        fprintf(stderr, "Error: Signature value too large\n");
+    sig                = malloc(sig_buf_len);
+    if (!sig)
         goto cleanup;
-    }
-    sig = malloc(sig_buf_len);
-    if (!sig) {
-        fprintf(stderr, "Error: Out of memory decoding signature\n");
+    int sig_len = BIO_read(b64_bio, sig, (int)sig_buf_len);
+    if (sig_len <= 0)
         goto cleanup;
-    }
-    sig_len = BIO_read(b64_bio, sig, (int)sig_buf_len);
 
-    if (sig_len <= 0) {
-        fprintf(stderr, "Error: Failed to decode base64 signature\n");
-        goto cleanup;
-    }
-
-    // 2. Load Public Key
-    key_file = fopen(argv[2], "rb");
-    if (!key_file) {
-        perror("Failed to open public key file");
-        goto cleanup;
-    }
-    pkey = PEM_read_PUBKEY(key_file, NULL, NULL, NULL);
-    if (!pkey) {
-        // Try reading as certificate
-        fseek(key_file, 0, SEEK_SET);
-        X509 *x509 = PEM_read_X509(key_file, NULL, NULL, NULL);
-        if (x509) {
-            pkey = X509_get_pubkey(x509);
-            X509_free(x509);
-        }
-    }
-    fclose(key_file);
-    key_file = NULL;
-
-    if (!pkey) {
-        fprintf(stderr, "Error: Failed to load public key from %s\n", argv[2]);
-        ERR_print_errors_fp(stderr);
-        goto cleanup;
-    }
-
-    // 3. Verify
     ERR_clear_error();
     ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        fprintf(stderr, "Error: Failed to allocate verification context\n");
+    if (!ctx)
         goto cleanup;
-    }
-    int result = 0;
+
     if (EVP_DigestVerifyInit(ctx, NULL, EVP_sha256(), NULL, pkey) > 0) {
         if (EVP_DigestVerifyUpdate(ctx, canonical_buf, canonical_len) > 0) {
             if (EVP_DigestVerifyFinal(ctx, sig, (size_t)sig_len) > 0) {
-                result = 1;
+                result = 0; // Success
+            } else {
+                result = 1; // Invalid signature
             }
         }
-    }
-
-    if (result) {
-        printf("Signature verification: SUCCESS\n");
-        exit_code = 0;
-    } else {
-        fprintf(stderr, "Signature verification: FAILURE\n");
-        ERR_print_errors_fp(stderr);
     }
 
 cleanup:
     if (ctx)
         EVP_MD_CTX_free(ctx);
-    if (pkey)
-        EVP_PKEY_free(pkey);
-    if (key_file)
-        fclose(key_file);
     if (b64_bio)
         BIO_free_all(b64_bio);
     else if (mem_bio)
@@ -333,7 +267,6 @@ cleanup:
         vantaq_evidence_canonical_destroy(canonical_buf);
     if (evidence)
         vantaq_evidence_destroy(evidence);
-    free(json);
     free(ev_id);
     free(dev_id);
     free(ver_id);
@@ -345,5 +278,54 @@ cleanup:
     free(sig_alg);
     free(sig_b64);
     free(sig);
-    return exit_code;
+    return result;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <evidence.json> <public_key.pem>\n", argv[0]);
+        return 1;
+    }
+
+    char *json = read_file(argv[1]);
+    if (!json) {
+        fprintf(stderr, "Error: Failed to read JSON file\n");
+        return 1;
+    }
+
+    FILE *key_f = fopen(argv[2], "rb");
+    if (!key_f) {
+        perror("Failed to open key file");
+        free(json);
+        return 1;
+    }
+    EVP_PKEY *pkey = PEM_read_PUBKEY(key_f, NULL, NULL, NULL);
+    if (!pkey) {
+        fseek(key_f, 0, SEEK_SET);
+        X509 *x509 = PEM_read_X509(key_f, NULL, NULL, NULL);
+        if (x509) {
+            pkey = X509_get_pubkey(x509);
+            X509_free(x509);
+        }
+    }
+    fclose(key_f);
+
+    if (!pkey) {
+        fprintf(stderr, "Error: Failed to load public key\n");
+        ERR_print_errors_fp(stderr);
+        free(json);
+        return 1;
+    }
+
+    int res = verify_evidence_payload(json, pkey);
+    EVP_PKEY_free(pkey);
+    free(json);
+
+    if (res == 0) {
+        printf("Signature verification: SUCCESS\n");
+        return 0;
+    } else {
+        fprintf(stderr, "Signature verification: FAILURE\n");
+        return 1;
+    }
 }

@@ -77,4 +77,16 @@ const char *vantaq_evidence_get_claims(const struct vantaq_evidence *evidence);
 const char *vantaq_evidence_get_signature_alg(const struct vantaq_evidence *evidence);
 const char *vantaq_evidence_get_signature(const struct vantaq_evidence *evidence);
 
+/**
+ * @brief Update the signature of an existing evidence object.
+ * 
+ * @param evidence The evidence object to update.
+ * @param signature New Base64 encoded signature.
+ * @return vantaq_evidence_err_t Status code.
+ */
+vantaq_evidence_err_t vantaq_evidence_update_signature(
+    struct vantaq_evidence *evidence,
+    const char *signature
+);
+
 #endif

@@ -38,80 +38,7 @@ struct vantaq_verifier_config {
     bool has_allowed_apis;
 };
 
-struct vantaq_runtime_config {
-    size_t cbSize;
-
-    char service_listen_host[VANTAQ_MAX_FIELD_LEN];
-    int service_listen_port;
-    char service_version[VANTAQ_MAX_FIELD_LEN];
-    bool tls_enabled;
-    char tls_server_cert_path[VANTAQ_MAX_FIELD_LEN];
-    char tls_server_key_path[VANTAQ_MAX_FIELD_LEN];
-    char tls_trusted_client_ca_path[VANTAQ_MAX_FIELD_LEN];
-    bool tls_require_client_cert;
-
-    char device_id[VANTAQ_MAX_FIELD_LEN];
-    char model[VANTAQ_MAX_FIELD_LEN];
-    char serial_number[VANTAQ_MAX_FIELD_LEN];
-    char manufacturer[VANTAQ_MAX_FIELD_LEN];
-    char firmware_version[VANTAQ_MAX_FIELD_LEN];
-    char device_priv_key_path[VANTAQ_MAX_FIELD_LEN];
-    char device_pub_key_path[VANTAQ_MAX_FIELD_LEN];
-    char measurement_firmware_path[VANTAQ_MAX_FIELD_LEN];
-    char measurement_security_config_path[VANTAQ_MAX_FIELD_LEN];
-    char measurement_agent_binary_path[VANTAQ_MAX_FIELD_LEN];
-    char measurement_boot_state_path[VANTAQ_MAX_FIELD_LEN];
-    size_t measurement_max_file_bytes;
-
-    struct vantaq_string_list supported_claims;
-    struct vantaq_string_list signature_algorithms;
-    struct vantaq_string_list evidence_formats;
-    struct vantaq_string_list challenge_modes;
-    struct vantaq_string_list storage_modes;
-    struct vantaq_string_list allowed_subnets;
-    bool dev_allow_all_networks;
-    size_t audit_log_max_bytes;
-    char audit_log_path[VANTAQ_MAX_FIELD_LEN];
-    struct vantaq_verifier_config verifiers[VANTAQ_MAX_LIST_ITEMS];
-    size_t verifiers_count;
-    size_t challenge_ttl_seconds;
-    size_t challenge_max_global;
-    size_t challenge_max_per_verifier;
-
-    bool has_service_listen_host;
-    bool has_service_listen_port;
-    bool has_service_version;
-    bool has_tls_enabled;
-    bool has_tls_server_cert_path;
-    bool has_tls_server_key_path;
-    bool has_tls_trusted_client_ca_path;
-    bool has_tls_require_client_cert;
-    bool has_device_id;
-    bool has_model;
-    bool has_serial_number;
-    bool has_manufacturer;
-    bool has_firmware_version;
-    bool has_device_priv_key_path;
-    bool has_device_pub_key_path;
-    bool has_measurement_firmware_path;
-    bool has_measurement_security_config_path;
-    bool has_measurement_agent_binary_path;
-    bool has_measurement_boot_state_path;
-    bool has_measurement_max_file_bytes;
-    bool has_supported_claims;
-    bool has_signature_algorithms;
-    bool has_evidence_formats;
-    bool has_challenge_modes;
-    bool has_storage_modes;
-    bool has_allowed_subnets;
-    bool has_dev_allow_all_networks;
-    bool has_audit_log_max_bytes;
-    bool has_audit_log_path;
-    bool has_verifiers;
-    bool has_challenge_ttl_seconds;
-    bool has_challenge_max_global;
-    bool has_challenge_max_per_verifier;
-};
+struct vantaq_runtime_config;
 
 enum vantaq_config_status {
     VANTAQ_CONFIG_STATUS_OK = 0,
@@ -140,9 +67,16 @@ void vantaq_config_loader_destroy(struct vantaq_config_loader *loader);
 
 enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader *loader,
                                                     const char *path);
+enum vantaq_config_status vantaq_config_loader_load_fd(struct vantaq_config_loader *loader, int fd,
+                                                        const char *source_name);
 const char *vantaq_config_loader_last_error(const struct vantaq_config_loader *loader);
 const struct vantaq_runtime_config *
 vantaq_config_loader_config(const struct vantaq_config_loader *loader);
+
+/**
+ * @brief Release a reference to a configuration object obtained from the loader.
+ */
+void vantaq_config_release(const struct vantaq_runtime_config *config);
 
 const char *vantaq_runtime_service_listen_host(const struct vantaq_runtime_config *config);
 int vantaq_runtime_service_listen_port(const struct vantaq_runtime_config *config);
@@ -168,12 +102,12 @@ const char *vantaq_runtime_measurement_boot_state_path(const struct vantaq_runti
 size_t vantaq_runtime_measurement_max_file_bytes(const struct vantaq_runtime_config *config);
 
 size_t vantaq_runtime_capability_count(const struct vantaq_runtime_config *config,
-                                       enum vantaq_capability_list list);
+                                        enum vantaq_capability_list list);
 const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *config,
-                                           enum vantaq_capability_list list, size_t index);
+                                            enum vantaq_capability_list list, size_t index);
 size_t vantaq_runtime_allowed_subnet_count(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_config *config,
-                                               size_t index);
+                                                size_t index);
 bool vantaq_runtime_dev_allow_all_networks(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_audit_log_max_bytes(const struct vantaq_runtime_config *config);
 const char *vantaq_runtime_audit_log_path(const struct vantaq_runtime_config *config);
@@ -182,15 +116,15 @@ const char *vantaq_runtime_verifier_id(const struct vantaq_runtime_config *confi
 const char *vantaq_runtime_verifier_cert_subject_cn(const struct vantaq_runtime_config *config,
                                                     size_t index);
 const char *vantaq_runtime_verifier_cert_san_uri(const struct vantaq_runtime_config *config,
-                                                 size_t index);
+                                                    size_t index);
 const char *vantaq_runtime_verifier_status(const struct vantaq_runtime_config *config, size_t index);
 size_t vantaq_runtime_verifier_role_count(const struct vantaq_runtime_config *config, size_t index);
 const char *vantaq_runtime_verifier_role_item(const struct vantaq_runtime_config *config,
-                                              size_t verifier_index, size_t role_index);
+                                                size_t verifier_index, size_t role_index);
 size_t vantaq_runtime_verifier_allowed_api_count(const struct vantaq_runtime_config *config,
-                                                 size_t index);
+                                                    size_t index);
 const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime_config *config,
-                                                     size_t verifier_index, size_t api_index);
+                                                        size_t verifier_index, size_t api_index);
 size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config);

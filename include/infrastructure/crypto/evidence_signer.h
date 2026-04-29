@@ -20,6 +20,10 @@ typedef enum {
 /**
  * @brief Sign canonical evidence payload with the device private key.
  * 
+ * NOTE: Only ECDSA-P256-SHA256 is supported. The device private key must not
+ * be passphrase-protected as this implementation does not currently support
+ * passphrase callbacks (addresses E1).
+ * 
  * @param key Loaded device key object containing the private key.
  * @param signature_alg Signature algorithm to use (e.g., "ECDSA-P256-SHA256").
  * @param payload Canonical bytes to sign.
@@ -37,10 +41,5 @@ vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key,
  * @brief Destroy the base64 signature allocated by vantaq_evidence_sign.
  */
 void vantaq_signature_b64_destroy(char *signature_b64);
-
-/**
- * @brief Backward-compatible alias for vantaq_signature_b64_destroy.
- */
-void vantaq_signature_b64_free(char *signature_b64);
 
 #endif

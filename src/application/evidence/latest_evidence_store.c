@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "application/evidence/latest_evidence_store.h"
+#include "infrastructure/memory/zero_struct.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -19,13 +20,6 @@ struct vantaq_latest_evidence_store {
     size_t max_verifiers;
     struct evidence_entry *entries;
 };
-
-static void secure_zero_memory(void *ptr, size_t size) {
-    volatile unsigned char *p = ptr;
-    while (size--) {
-        *p++ = 0;
-    }
-}
 
 static vantaq_evidence_err_t clone_evidence(const struct vantaq_evidence *evidence,
                                             struct vantaq_evidence **out_clone) {
@@ -74,8 +68,8 @@ void vantaq_latest_evidence_store_destroy(struct vantaq_latest_evidence_store *s
     for (size_t i = 0; i < store->max_verifiers; i++) {
         if (store->entries[i].active) {
             vantaq_evidence_destroy(store->entries[i].evidence);
-            secure_zero_memory(store->entries[i].signature_b64,
-                               strlen(store->entries[i].signature_b64));
+            vantaq_explicit_bzero(store->entries[i].signature_b64,
+                                  strlen(store->entries[i].signature_b64));
             free(store->entries[i].signature_b64);
         }
     }
@@ -118,6 +112,7 @@ vantaq_latest_evidence_store_put(struct vantaq_latest_evidence_store *store,
     ssize_t slot      = -1;
     ssize_t free_slot = -1;
 
+    // NOTE: Linear O(n) scan. Optimized for small max_verifiers (addresses D3).
     for (size_t i = 0; i < store->max_verifiers; i++) {
         if (store->entries[i].active) {
             if (strcmp(store->entries[i].verifier_id, verifier_id) == 0) {
@@ -133,7 +128,7 @@ vantaq_latest_evidence_store_put(struct vantaq_latest_evidence_store *store,
         if (free_slot == -1) {
             pthread_mutex_unlock(&store->mutex);
             vantaq_evidence_destroy(new_ev);
-            secure_zero_memory(new_sig, strlen(new_sig));
+            vantaq_explicit_bzero(new_sig, strlen(new_sig));
             free(new_sig);
             return VANTAQ_LATEST_EVIDENCE_ERR_FULL;
         }
@@ -159,7 +154,7 @@ vantaq_latest_evidence_store_put(struct vantaq_latest_evidence_store *store,
         vantaq_evidence_destroy(old_ev);
     }
     if (old_sig) {
-        secure_zero_memory(old_sig, strlen(old_sig));
+        vantaq_explicit_bzero(old_sig, strlen(old_sig));
         free(old_sig);
     }
     return VANTAQ_LATEST_EVIDENCE_OK;
@@ -191,6 +186,7 @@ vantaq_latest_evidence_store_get(struct vantaq_latest_evidence_store *store,
     char signature_b64[VANTAQ_SIGNATURE_MAX];
     bool found = false;
 
+    // NOTE: Linear O(n) scan. Optimized for small max_verifiers (addresses D3).
     for (size_t i = 0; i < store->max_verifiers; i++) {
         if (store->entries[i].active && strcmp(store->entries[i].verifier_id, verifier_id) == 0) {
             strncpy(evidence_id, vantaq_evidence_get_evidence_id(store->entries[i].evidence),

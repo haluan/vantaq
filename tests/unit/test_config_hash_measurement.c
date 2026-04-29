@@ -3,6 +3,7 @@
 
 #include "domain/measurement/measurement.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/config_loader_internal.h"
 #include "infrastructure/linux_measurement/config_hash.h"
 #include "infrastructure/memory/zero_struct.h"
 
@@ -144,6 +145,22 @@ static void test_config_hash_deterministic_and_changes(void **state) {
     vantaq_measurement_result_destroy(result3);
 }
 
+static void test_config_hash_rejects_proc_and_sys_paths(void **state) {
+    struct ConfigHashMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+
+    fill_measurement_config(&config, "/proc/cpuinfo", 1024);
+    s_assert_int_equal(s, vantaq_config_hash_measure(&config, &result),
+                       VANTAQ_CONFIG_HASH_ERR_INVALID_ARG);
+    s_assert_null(s, result);
+
+    fill_measurement_config(&config, "/sys/class/net/lo/address", 1024);
+    s_assert_int_equal(s, vantaq_config_hash_measure(&config, &result),
+                       VANTAQ_CONFIG_HASH_ERR_INVALID_ARG);
+    s_assert_null(s, result);
+}
+
 static void test_config_hash_invalid_args(void **state) {
     struct ConfigHashMeasurementTestSuite *s = *state;
     struct vantaq_runtime_config config;
@@ -186,6 +203,26 @@ static void test_config_hash_file_too_large(void **state) {
     vantaq_measurement_result_destroy(result);
 }
 
+static void test_config_hash_empty_file_rejected(void **state) {
+    struct ConfigHashMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+
+    assert_int_equal(write_file(s->config_path, (const unsigned char *)"", 0), 0);
+    fill_measurement_config(&config, s->config_path, 1024);
+
+    enum vantaq_config_hash_status status = vantaq_config_hash_measure(&config, &result);
+
+    s_assert_int_equal(s, status, VANTAQ_CONFIG_HASH_ERR_READ_FAILED);
+    s_assert_non_null(s, result);
+    s_assert_int_equal(s, vantaq_measurement_result_get_status(result),
+                       VANTAQ_MEASUREMENT_STATUS_ERROR);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_READ_FAILED);
+
+    vantaq_measurement_result_destroy(result);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_config_hash_success, suite_setup, suite_teardown),
@@ -193,8 +230,12 @@ int main(void) {
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_config_hash_deterministic_and_changes, suite_setup,
                                         suite_teardown),
+        cmocka_unit_test_setup_teardown(test_config_hash_rejects_proc_and_sys_paths, suite_setup,
+                                        suite_teardown),
         cmocka_unit_test_setup_teardown(test_config_hash_invalid_args, suite_setup, suite_teardown),
         cmocka_unit_test_setup_teardown(test_config_hash_file_too_large, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_config_hash_empty_file_rejected, suite_setup,
                                         suite_teardown),
     };
 

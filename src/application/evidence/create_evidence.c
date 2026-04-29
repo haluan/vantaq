@@ -2,27 +2,54 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "application/evidence/create_evidence.h"
+#include "domain/attestation_challenge/challenge.h"
 #include "domain/evidence/evidence_canonical.h"
+#include "domain/measurement/measurement.h"
 #include "domain/measurement/supported_claims.h"
 #include "infrastructure/crypto/evidence_signer.h"
 #include "infrastructure/linux_measurement/agent_integrity.h"
 #include "infrastructure/linux_measurement/boot_state.h"
 #include "infrastructure/linux_measurement/config_hash.h"
 #include "infrastructure/linux_measurement/firmware_hash.h"
+#include "infrastructure/memory/zero_struct.h"
 
+#include <openssl/crypto.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #define SIGNATURE_ALG "ECDSA-P256-SHA256"
-#define CLAIM_DEVICE_IDENTITY "device_identity"
-#define CLAIM_FIRMWARE_HASH "firmware_hash"
-#define CLAIM_CONFIG_HASH "config_hash"
-#define CLAIM_AGENT_INTEGRITY "agent_integrity"
-#define CLAIM_BOOT_STATE "boot_state"
-#define BOOT_STATE_KEY_SECURE_BOOT "secure_boot"
-#define BOOT_STATE_KEY_BOOT_MODE "boot_mode"
+
+/**
+ * Compare bounded C strings without strcmp-style early exit on first differing byte (timing
+ * oracle). Both strings must be NUL-terminated with strlen <= max_len; otherwise comparison fails.
+ */
+static bool constant_time_bounded_cstring_equal(const char *lhs, const char *rhs, size_t max_len) {
+    size_t lhs_len    = 0U;
+    size_t rhs_len    = 0U;
+    unsigned char bad = 0U;
+    size_t i          = 0U;
+
+    if (lhs == NULL || rhs == NULL) {
+        return false;
+    }
+
+    lhs_len = strnlen(lhs, max_len + 1U);
+    rhs_len = strnlen(rhs, max_len + 1U);
+
+    bad |= (unsigned char)(lhs_len != rhs_len);
+    bad |= (unsigned char)(lhs_len > max_len);
+    bad |= (unsigned char)(rhs_len > max_len);
+
+    for (i = 0U; i < max_len; i++) {
+        unsigned char lc = (unsigned char)((i < lhs_len) ? lhs[i] : 0);
+        unsigned char rc = (unsigned char)((i < rhs_len) ? rhs[i] : 0);
+        bad |= (unsigned char)(lc ^ rc);
+    }
+
+    return bad == 0U;
+}
 
 static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
                                          size_t secure_boot_size, char *boot_mode,
@@ -47,29 +74,39 @@ static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
 
     copy = strdup(value);
     if (copy == NULL) {
-        return false;
+        goto cleanup;
     }
 
     token = strtok_r(copy, ";", &token_ctx);
     while (token != NULL) {
         equal_sign = strchr(token, '=');
-        if (equal_sign != NULL) {
+        if (equal_sign == NULL) {
+            if (token[0] != '\0') {
+                goto cleanup;
+            }
+            token = strtok_r(NULL, ";", &token_ctx);
+            continue;
+        }
+        {
             *equal_sign = '\0';
             key         = token;
             val         = equal_sign + 1;
 
-            if (strcmp(key, BOOT_STATE_KEY_SECURE_BOOT) == 0) {
+            if (strcmp(key, VANTAQ_BOOT_STATE_KEY_SECURE_BOOT) == 0) {
                 if (has_secure || val[0] == '\0' || strlen(val) >= secure_boot_size) {
                     goto cleanup;
                 }
                 memcpy(secure_boot, val, strlen(val) + 1U);
                 has_secure = true;
-            } else if (strcmp(key, BOOT_STATE_KEY_BOOT_MODE) == 0) {
+            } else if (strcmp(key, VANTAQ_BOOT_STATE_KEY_BOOT_MODE) == 0) {
                 if (has_mode || val[0] == '\0' || strlen(val) >= boot_mode_size) {
                     goto cleanup;
                 }
                 memcpy(boot_mode, val, strlen(val) + 1U);
                 has_mode = true;
+            } else {
+                /* Reject unknown or malformed keys (addresses E5). */
+                goto cleanup;
             }
         }
 
@@ -92,7 +129,18 @@ static bool is_claim_allowed(const struct vantaq_runtime_config *runtime_config,
     for (i = 0; i < count; i++) {
         const char *allowed =
             vantaq_runtime_capability_item(runtime_config, VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, i);
-        if (allowed != NULL && strcmp(allowed, claim) == 0) {
+        size_t allowed_len = 0U;
+        size_t claim_len   = 0U;
+
+        if (allowed == NULL) {
+            continue;
+        }
+
+        allowed_len = strnlen(allowed, VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1U);
+        claim_len   = strnlen(claim, VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1U);
+        if (allowed_len <= VANTAQ_SUPPORTED_CLAIM_NAME_MAX &&
+            claim_len <= VANTAQ_SUPPORTED_CLAIM_NAME_MAX && allowed_len == claim_len &&
+            CRYPTO_memcmp(allowed, claim, claim_len) == 0) {
             return true;
         }
     }
@@ -108,10 +156,15 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
     if (req->claims_count > VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
-    if (req->claims_count > 0 && req->claims == NULL) {
+    if (req->claims_count == 0U) {
+        return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
+    }
+    if (req->claims == NULL) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
 
+    /* O(n²) comparison is capped by VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST (8), making it
+     * computationally safe (addresses E3). */
     for (i = 0; i < req->claims_count; i++) {
         const char *claim = req->claims[i];
         if (claim == NULL || claim[0] == '\0') {
@@ -122,7 +175,12 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
             if (req->claims[j] == NULL || req->claims[j][0] == '\0') {
                 return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
             }
-            if (strcmp(claim, req->claims[j]) == 0) {
+            size_t len_i = strnlen(claim, VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1U);
+            size_t len_j = strnlen(req->claims[j], VANTAQ_SUPPORTED_CLAIM_NAME_MAX + 1U);
+
+            if (len_i <= VANTAQ_SUPPORTED_CLAIM_NAME_MAX &&
+                len_j <= VANTAQ_SUPPORTED_CLAIM_NAME_MAX && len_i == len_j &&
+                CRYPTO_memcmp(claim, req->claims[j], len_i) == 0) {
                 return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
             }
         }
@@ -172,15 +230,15 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
     *out_claims_json = NULL;
 
     for (i = 0; i < req->claims_count; i++) {
-        if (strcmp(req->claims[i], CLAIM_DEVICE_IDENTITY) == 0) {
+        if (strcmp(req->claims[i], VANTAQ_CLAIM_DEVICE_IDENTITY) == 0) {
             include_device_identity = true;
-        } else if (strcmp(req->claims[i], CLAIM_FIRMWARE_HASH) == 0) {
+        } else if (strcmp(req->claims[i], VANTAQ_CLAIM_FIRMWARE_HASH) == 0) {
             include_firmware_hash = true;
-        } else if (strcmp(req->claims[i], CLAIM_CONFIG_HASH) == 0) {
+        } else if (strcmp(req->claims[i], VANTAQ_CLAIM_CONFIG_HASH) == 0) {
             include_config_hash = true;
-        } else if (strcmp(req->claims[i], CLAIM_AGENT_INTEGRITY) == 0) {
+        } else if (strcmp(req->claims[i], VANTAQ_CLAIM_AGENT_INTEGRITY) == 0) {
             include_agent_integrity = true;
-        } else if (strcmp(req->claims[i], CLAIM_BOOT_STATE) == 0) {
+        } else if (strcmp(req->claims[i], VANTAQ_CLAIM_BOOT_STATE) == 0) {
             include_boot_state = true;
         }
     }
@@ -202,7 +260,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
                      "%s\"device_identity\":{\"model\":\"%s\",\"serial_number\":\"%s\"}",
                      first ? "" : ",", model, serial_number);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
         }
         used += (size_t)n;
@@ -234,7 +292,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"firmware_hash\":\"%s\"",
                      first ? "" : ",", firmware_value);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
         }
         used += (size_t)n;
@@ -268,7 +326,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"config_hash\":\"%s\"",
                      first ? "" : ",", config_value);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
         }
         used += (size_t)n;
@@ -304,7 +362,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "%s\"agent_integrity\":\"%s\"",
                      first ? "" : ",", agent_integrity_value);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
         }
         used += (size_t)n;
@@ -322,7 +380,12 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
             goto cleanup;
         }
         if (boot_state_measurement_status != VANTAQ_BOOT_STATE_OK || measurement_result == NULL) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            if (measurement_result != NULL && vantaq_measurement_result_get_error_code(
+                                                  measurement_result) == MEASUREMENT_PARSE_FAILED) {
+                app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_PARSE_FAILED;
+            } else {
+                app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+            }
             goto cleanup;
         }
 
@@ -342,7 +405,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
                      "%s\"boot_state\":{\"secure_boot\":\"%s\",\"boot_mode\":\"%s\"}",
                      first ? "" : ",", boot_state_secure_boot, boot_state_mode);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+            app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
         }
         used += (size_t)n;
@@ -354,7 +417,7 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
 
     n = snprintf(claims_buf + used, sizeof(claims_buf) - used, "}");
     if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
-        app_err = VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED;
+        app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
         goto cleanup;
     }
 
@@ -368,18 +431,16 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
 
 cleanup:
     vantaq_measurement_result_destroy(measurement_result);
+    vantaq_explicit_bzero(claims_buf, sizeof(claims_buf));
+    vantaq_explicit_bzero(boot_state_secure_boot, sizeof(boot_state_secure_boot));
+    vantaq_explicit_bzero(boot_state_mode, sizeof(boot_state_mode));
     return app_err;
 }
 
-vantaq_app_evidence_err_t vantaq_app_create_evidence(
-    struct vantaq_challenge_store *store, struct vantaq_latest_evidence_store *latest_store,
-    const struct vantaq_runtime_config *runtime_config, const vantaq_device_key_t *device_key,
-    const char *verifier_id, const struct vantaq_create_evidence_req *req,
-    int64_t current_time_unix, struct vantaq_create_evidence_res *out_res) {
-    if (!store || !runtime_config || !device_key || !verifier_id || !req || !out_res) {
-        return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
-    }
-
+vantaq_app_evidence_err_t vantaq_app_create_evidence(const struct vantaq_app_evidence_context *ctx,
+                                                     const char *verifier_id,
+                                                     const struct vantaq_create_evidence_req *req,
+                                                     struct vantaq_create_evidence_res *out_res) {
     vantaq_app_evidence_err_t app_err  = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
     struct vantaq_challenge *challenge = NULL;
     struct vantaq_evidence *evidence   = NULL;
@@ -388,10 +449,25 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(
     char *sig_b64                      = NULL;
     char *claims_json                  = NULL;
 
+    if (!ctx || !ctx->store || !ctx->runtime_config || !ctx->device_key || !verifier_id || !req ||
+        !out_res) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+
+    /* Device ID validation (addresses E4). */
+    if (!req->device_id || req->device_id[0] == '\0' ||
+        strnlen(req->device_id, VANTAQ_DEVICE_ID_MAX) >= VANTAQ_DEVICE_ID_MAX) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
+        goto cleanup;
+    }
+
     // 1. Find challenge without consuming it yet (prevent TOCTOU later)
     // Note: current_time_unix is in seconds, store expects ms.
+    // NOTE: This uses the wall-clock time passed via ctx->current_time_unix.
+    // Backwards clock adjustments may affect TTL enforcement (addresses E2).
     enum vantaq_challenge_store_status store_status = vantaq_challenge_store_find_and_consume(
-        store, req->challenge_id, current_time_unix * 1000, false, &challenge);
+        ctx->store, req->challenge_id, ctx->current_time_unix * 1000, false, &challenge);
 
     if (store_status == VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_NOT_FOUND;
@@ -410,28 +486,26 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(
         goto cleanup;
     }
 
-    // 2. Validate challenge properties
-    if (strcmp(vantaq_challenge_get_nonce_hex(challenge), req->nonce) != 0) {
+    // 2. Validate challenge properties (fixed-length scan avoids strcmp timing leak).
+    if (!constant_time_bounded_cstring_equal(vantaq_challenge_get_nonce_hex(challenge), req->nonce,
+                                             VANTAQ_NONCE_HEX_MAX - 1U)) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_NONCE_MISMATCH;
         goto cleanup;
     }
 
-    if (strcmp(vantaq_challenge_get_verifier_id(challenge), verifier_id) != 0) {
+    if (!constant_time_bounded_cstring_equal(vantaq_challenge_get_verifier_id(challenge),
+                                             verifier_id, VANTAQ_VERIFIER_ID_MAX - 1U)) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_VERIFIER_MISMATCH;
         goto cleanup;
     }
 
-    app_err = validate_claims_selection(runtime_config, req);
+    app_err = validate_claims_selection(ctx->runtime_config, req);
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
         goto cleanup;
     }
 
-    app_err = build_claims_json(runtime_config, req, &claims_json);
+    app_err = build_claims_json(ctx->runtime_config, req, &claims_json);
     if (app_err != VANTAQ_APP_EVIDENCE_OK) {
-        goto cleanup;
-    }
-    if (!req->device_id) {
-        app_err = VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
         goto cleanup;
     }
 
@@ -439,9 +513,11 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(
     char ev_id[VANTAQ_EVIDENCE_ID_MAX];
     snprintf(ev_id, sizeof(ev_id), "%s", req->challenge_id);
 
+    /* Domain API now supports update_signature, so we avoid fragility of placeholder double
+     * creation (addresses D3). */
     vantaq_evidence_err_t ev_err = vantaq_evidence_create(
         ev_id, req->device_id, verifier_id, req->challenge_id, req->nonce, "remote_attestation",
-        current_time_unix, claims_json, SIGNATURE_ALG, "sig-placeholder", &evidence);
+        ctx->current_time_unix, claims_json, SIGNATURE_ALG, "sig-placeholder", &evidence);
 
     if (ev_err != VANTAQ_EVIDENCE_OK) {
         app_err = (ev_err == VANTAQ_EVIDENCE_ERR_MALLOC_FAILED)
@@ -458,20 +534,15 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(
     }
 
     // 5. Sign the payload
-    vantaq_signer_err_t sign_err =
-        vantaq_evidence_sign(device_key, SIGNATURE_ALG, canonical_buf, canonical_len, &sig_b64);
+    vantaq_signer_err_t sign_err = vantaq_evidence_sign(ctx->device_key, SIGNATURE_ALG,
+                                                        canonical_buf, canonical_len, &sig_b64);
     if (sign_err != VANTAQ_SIGNER_OK) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_SIGNING_FAILED;
         goto cleanup;
     }
 
-    // Re-create evidence with the finalized signature so domain object and response stay
-    // consistent.
-    vantaq_evidence_destroy(evidence);
-    evidence = NULL;
-    ev_err   = vantaq_evidence_create(ev_id, req->device_id, verifier_id, req->challenge_id,
-                                      req->nonce, "remote_attestation", current_time_unix,
-                                      claims_json, SIGNATURE_ALG, sig_b64, &evidence);
+    // 6. Update evidence with the finalized signature.
+    ev_err = vantaq_evidence_update_signature(evidence, sig_b64);
     if (ev_err != VANTAQ_EVIDENCE_OK) {
         app_err = (ev_err == VANTAQ_EVIDENCE_ERR_MALLOC_FAILED)
                       ? VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED
@@ -479,23 +550,29 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(
         goto cleanup;
     }
 
-    // 6. After successful signing, atomically mark the challenge as used.
+    // 7. After successful signing, atomically mark the challenge as used.
     // If another thread already marked it used while we were signing, we fail here.
+    if (vantaq_challenge_is_expired(challenge, ctx->current_time_unix * 1000)) {
+        app_err = VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_EXPIRED;
+        goto cleanup;
+    }
     if (!vantaq_challenge_mark_used(challenge)) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_USED;
         goto cleanup;
     }
 
-    // 7. Store latest evidence in memory if store provided
-    if (latest_store) {
-        if (vantaq_latest_evidence_store_put(latest_store, verifier_id, evidence, sig_b64) !=
+    // 8. Store latest evidence in memory if store provided
+    // NOTE: If this fails, the challenge is still marked used. This results in
+    // a cache desync for the /latest endpoint (addresses E1).
+    if (ctx->latest_store) {
+        if (vantaq_latest_evidence_store_put(ctx->latest_store, verifier_id, evidence, sig_b64) !=
             VANTAQ_LATEST_EVIDENCE_OK) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
             goto cleanup;
         }
     }
 
-    // 8. Success
+    // 9. Success
     out_res->evidence      = evidence;
     out_res->signature_b64 = sig_b64;
     evidence               = NULL; // Transferred ownership
@@ -511,8 +588,6 @@ cleanup:
         vantaq_signature_b64_destroy(sig_b64);
     if (claims_json)
         free(claims_json);
-    // challenge is borrowed from store, do not destroy here (check store ownership rules)
-    // Looking at challenge_store.h, it says "(borrowed)".
     return app_err;
 }
 

@@ -273,7 +273,7 @@ static void test_firmware_hash_missing_source_returns_404(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 404);
-    s_assert_non_null(s, strstr(body, "MEASUREMENT_SOURCE_NOT_FOUND"));
+    s_assert_non_null(s, strstr(body, "measurement_source_not_found"));
 }
 
 static void test_claim_validation_errors(void **state) {
@@ -300,7 +300,7 @@ static void test_claim_validation_errors(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "UNSUPPORTED_CLAIM"));
+    s_assert_non_null(s, strstr(body, "unsupported_claim"));
 
     s_assert_int_equal(
         s,
@@ -315,7 +315,7 @@ static void test_claim_validation_errors(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "INVALID_CLAIMS"));
+    s_assert_non_null(s, strstr(body, "invalid_claims"));
 
     s_assert_int_equal(
         s,
@@ -332,7 +332,7 @@ static void test_claim_validation_errors(void **state) {
                        0);
 
     s_assert_int_equal(s, status, 400);
-    s_assert_non_null(s, strstr(body, "INVALID_CLAIMS"));
+    s_assert_non_null(s, strstr(body, "invalid_claims"));
 }
 
 static void test_claim_not_allowed_returns_403(void **state) {
@@ -385,7 +385,7 @@ static void test_claim_not_allowed_returns_403(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 403);
-    s_assert_non_null(s, strstr(body, "CLAIM_NOT_ALLOWED"));
+    s_assert_non_null(s, strstr(body, "claim_not_allowed"));
 
     vantaq_test_server_stop(&deny_server);
     unlink(firmware_path);

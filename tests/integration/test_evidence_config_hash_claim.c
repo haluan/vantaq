@@ -284,7 +284,7 @@ static void test_config_hash_missing_source_returns_404(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 404);
-    s_assert_non_null(s, strstr(body, "MEASUREMENT_SOURCE_NOT_FOUND"));
+    s_assert_non_null(s, strstr(body, "measurement_source_not_found"));
 }
 
 static void test_claim_not_allowed_returns_403(void **state) {
@@ -342,7 +342,7 @@ static void test_claim_not_allowed_returns_403(void **state) {
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 403);
-    s_assert_non_null(s, strstr(body, "CLAIM_NOT_ALLOWED"));
+    s_assert_non_null(s, strstr(body, "claim_not_allowed"));
 
     vantaq_test_server_stop(&deny_server);
     unlink(firmware_path);

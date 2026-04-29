@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "infrastructure/crypto/evidence_signer.h"
+#include "infrastructure/memory/zero_struct.h"
 
 #include <limits.h>
 #include <openssl/bio.h>
@@ -10,13 +11,6 @@
 #include <openssl/pem.h>
 #include <stdlib.h>
 #include <string.h>
-
-static void secure_zero_memory(void *ptr, size_t size) {
-    volatile unsigned char *p = ptr;
-    while (size--) {
-        *p++ = 0;
-    }
-}
 
 vantaq_signer_err_t vantaq_evidence_sign(const vantaq_device_key_t *key, const char *signature_alg,
                                          const char *payload, size_t payload_len,
@@ -121,7 +115,7 @@ cleanup:
     if (bio)
         BIO_free(bio);
     if (sig) {
-        secure_zero_memory(sig, sig_len);
+        vantaq_explicit_bzero(sig, sig_len);
         free(sig);
     }
     if (status != VANTAQ_SIGNER_OK && b64_sig)
@@ -139,5 +133,3 @@ void vantaq_signature_b64_destroy(char *signature_b64) {
         free(signature_b64);
     }
 }
-
-void vantaq_signature_b64_free(char *signature_b64) { vantaq_signature_b64_destroy(signature_b64); }

@@ -10,6 +10,14 @@
 /**
  * @brief Serialize evidence deterministically before signing.
  * 
+ * NOTE: The canonical form includes the `evidence_id`. This ID must be assigned
+ * and stable before calling this function to ensure the resulting signature
+ * remains valid for the finalized evidence object.
+ * 
+ * The output uses a pipe '|' delimiter between fields. Field values are
+ * escaped ('|' -> '\|', '\' -> '\\') to prevent format injection and ensure
+ * unambiguous parsing if required.
+ * 
  * @param evidence The evidence object to serialize.
  * @param out_buffer Pointer to hold the allocated serialized buffer.
  * @param out_len Pointer to hold the length of the serialized buffer.
@@ -20,12 +28,9 @@ vantaq_evidence_err_t vantaq_evidence_serialize_canonical(const struct vantaq_ev
 
 /**
  * @brief Destroy the buffer allocated by vantaq_evidence_serialize_canonical.
+ * 
+ * Securely zeros the buffer before releasing memory.
  */
 void vantaq_evidence_canonical_destroy(char *buffer);
-
-/**
- * @brief Backward-compatible alias for vantaq_evidence_canonical_destroy.
- */
-void vantaq_evidence_canonical_free(char *buffer);
 
 #endif

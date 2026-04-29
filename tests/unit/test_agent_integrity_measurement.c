@@ -3,6 +3,7 @@
 
 #include "domain/measurement/measurement.h"
 #include "infrastructure/config_loader.h"
+#include "infrastructure/config_loader_internal.h"
 #include "infrastructure/linux_measurement/agent_integrity.h"
 #include "infrastructure/memory/zero_struct.h"
 
@@ -191,6 +192,26 @@ static void test_agent_integrity_file_too_large(void **state) {
     vantaq_measurement_result_destroy(result);
 }
 
+static void test_agent_integrity_empty_file_rejected(void **state) {
+    struct AgentIntegrityMeasurementTestSuite *s = *state;
+    struct vantaq_runtime_config config;
+    struct vantaq_measurement_result *result = NULL;
+
+    assert_int_equal(write_file(s->agent_binary_path, (const unsigned char *)"", 0), 0);
+    fill_measurement_config(&config, s->agent_binary_path, 1024);
+
+    enum vantaq_agent_integrity_status status = vantaq_agent_integrity_measure(&config, &result);
+
+    s_assert_int_equal(s, status, VANTAQ_AGENT_INTEGRITY_ERR_READ_FAILED);
+    s_assert_non_null(s, result);
+    s_assert_int_equal(s, vantaq_measurement_result_get_status(result),
+                       VANTAQ_MEASUREMENT_STATUS_ERROR);
+    s_assert_int_equal(s, vantaq_measurement_result_get_error_code(result),
+                       MEASUREMENT_READ_FAILED);
+
+    vantaq_measurement_result_destroy(result);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_agent_integrity_success, suite_setup, suite_teardown),
@@ -201,6 +222,8 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_agent_integrity_invalid_args, suite_setup,
                                         suite_teardown),
         cmocka_unit_test_setup_teardown(test_agent_integrity_file_too_large, suite_setup,
+                                        suite_teardown),
+        cmocka_unit_test_setup_teardown(test_agent_integrity_empty_file_rejected, suite_setup,
                                         suite_teardown),
     };
 

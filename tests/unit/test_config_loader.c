@@ -8,9 +8,12 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cmocka.h>
+
+#define TEST_PRIVATE_KEY_PATH "/tmp/vantaq_test_private_key.pem"
 
 #define YAML_SERVER_VALID                                                                          \
     "server:\n"                                                                                    \
@@ -20,7 +23,19 @@
     "  tls:\n"                                                                                     \
     "    enabled: false\n"                                                                         \
     "    server_cert_path: /etc/hosts\n"                                                           \
-    "    server_key_path: /etc/hosts\n"                                                            \
+    "    server_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                             \
+    "    trusted_client_ca_path: /etc/hosts\n"                                                     \
+    "    require_client_cert: true\n"
+
+#define YAML_SERVER_INVALID_DNS_HOSTNAME                                                           \
+    "server:\n"                                                                                    \
+    "  listen_address: foo..bar\n"                                                                 \
+    "  listen_port: 8080\n"                                                                        \
+    "  version: 0.1.0\n"                                                                           \
+    "  tls:\n"                                                                                     \
+    "    enabled: false\n"                                                                         \
+    "    server_cert_path: /etc/hosts\n"                                                           \
+    "    server_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                             \
     "    trusted_client_ca_path: /etc/hosts\n"                                                     \
     "    require_client_cert: true\n"
 
@@ -31,7 +46,7 @@
     "  tls:\n"                                                                                     \
     "    enabled: false\n"                                                                         \
     "    server_cert_path: /etc/hosts\n"                                                           \
-    "    server_key_path: /etc/hosts\n"                                                            \
+    "    server_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                             \
     "    trusted_client_ca_path: /etc/hosts\n"                                                     \
     "    require_client_cert: true\n"
 
@@ -43,7 +58,7 @@
     "  tls:\n"                                                                                     \
     "    enabled: false\n"                                                                         \
     "    server_cert_path: /etc/hosts\n"                                                           \
-    "    server_key_path: /etc/hosts\n"                                                            \
+    "    server_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                             \
     "    trusted_client_ca_path: /etc/hosts\n"                                                     \
     "    require_client_cert: true\n"
 
@@ -65,7 +80,7 @@
     "  serial_number: SN-001\n"                                                                    \
     "  manufacturer: ExampleCorp\n"                                                                \
     "  firmware_version: 0.1.0-demo\n"                                                             \
-    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_priv_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                          \
     "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_DEVICE_MISSING_ID                                                                     \
@@ -74,7 +89,7 @@
     "  serial_number: SN-001\n"                                                                    \
     "  manufacturer: ExampleCorp\n"                                                                \
     "  firmware_version: 0.1.0-demo\n"                                                             \
-    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_priv_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                          \
     "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_DEVICE_MISSING_MANUFACTURER                                                           \
@@ -83,7 +98,7 @@
     "  model: edge-gateway-v1\n"                                                                   \
     "  serial_number: SN-001\n"                                                                    \
     "  firmware_version: 0.1.0-demo\n"                                                             \
-    "  device_priv_key_path: /etc/hosts\n"                                                         \
+    "  device_priv_key_path: " TEST_PRIVATE_KEY_PATH "\n"                                          \
     "  device_pub_key_path: /etc/hosts\n"
 
 #define YAML_CAPABILITIES_VALID                                                                    \
@@ -119,6 +134,23 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
         return -1;
     }
 
+    {
+        FILE *key_fp = fopen(TEST_PRIVATE_KEY_PATH, "wb");
+        if (key_fp == NULL) {
+            close(fd);
+            unlink(template);
+            return -1;
+        }
+        (void)fputs("dummy-private-key-for-tests\n", key_fp);
+        fclose(key_fp);
+        if (chmod(TEST_PRIVATE_KEY_PATH, S_IRUSR | S_IWUSR) != 0) {
+            unlink(TEST_PRIVATE_KEY_PATH);
+            close(fd);
+            unlink(template);
+            return -1;
+        }
+    }
+
     if (strlen(template) >= path_out_size) {
         close(fd);
         unlink(template);
@@ -140,6 +172,7 @@ static void remove_temp_yaml(const char *path) {
     if (path != NULL && path[0] != '\0') {
         unlink(path);
     }
+    unlink(TEST_PRIVATE_KEY_PATH);
 }
 
 static void test_valid_yaml_loads_successfully(void **state) {
@@ -165,7 +198,7 @@ static void test_valid_yaml_loads_successfully(void **state) {
     assert_true(vantaq_runtime_tls_enabled(config) == false);
     assert_true(vantaq_runtime_tls_require_client_cert(config));
     assert_string_equal(vantaq_runtime_tls_server_cert_path(config), "/etc/hosts");
-    assert_string_equal(vantaq_runtime_tls_server_key_path(config), "/etc/hosts");
+    assert_string_equal(vantaq_runtime_tls_server_key_path(config), TEST_PRIVATE_KEY_PATH);
     assert_string_equal(vantaq_runtime_tls_trusted_client_ca_path(config), "/etc/hosts");
     assert_int_equal(vantaq_runtime_verifier_count(config), 1);
     assert_string_equal(vantaq_runtime_verifier_id(config, 0), "govt-verifier-01");
@@ -418,6 +451,27 @@ static void test_challenge_size_overflow_fails_parse(void **state) {
     remove_temp_yaml(path);
 }
 
+static void test_invalid_listen_hostname_rejected(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_INVALID_DNS_HOSTNAME YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "network_access:\n"
+                                                       "  allowed_subnets: [10.50.10.0/24]\n"
+                                                       "  dev_allow_all_networks: false\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path),
+                     VANTAQ_CONFIG_STATUS_VALIDATION_ERROR);
+    assert_non_null(strstr(vantaq_config_loader_last_error(loader), "server.listen_address"));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
 static void test_inline_list_supports_quoted_item_with_comma(void **state) {
     (void)state;
     const char *yaml =
@@ -525,6 +579,7 @@ int main(void) {
         cmocka_unit_test(test_missing_device_id_fails),
         cmocka_unit_test(test_missing_listen_port_fails),
         cmocka_unit_test(test_invalid_port_fails),
+        cmocka_unit_test(test_invalid_listen_hostname_rejected),
         cmocka_unit_test(test_missing_required_identity_field_fails),
         cmocka_unit_test(test_missing_capabilities_fails),
         cmocka_unit_test(test_supported_claims_must_include_device_identity),

@@ -7,56 +7,66 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/** Detailed status for JSON extraction helpers (`*_status` APIs). */
+typedef enum {
+    VANTAQ_JSON_EXTRACT_OK = 0,
+    /** Key absent from JSON (only `*_status` APIs distinguish this from malformed input). */
+    VANTAQ_JSON_EXTRACT_NOT_FOUND,
+    /** Value missing, wrong type, illegal escapes, or truncated JSON string. */
+    VANTAQ_JSON_EXTRACT_MALFORMED,
+    /** Output buffer too small for decoded string content (including NUL). */
+    VANTAQ_JSON_EXTRACT_BUFFER_TOO_SMALL,
+    VANTAQ_JSON_EXTRACT_INVALID_ARGUMENT,
+} vantaq_json_extract_status_t;
+
+/** Detailed status for `vantaq_json_escape_str_status`. */
+typedef enum {
+    VANTAQ_JSON_ESCAPE_OK = 0,
+    VANTAQ_JSON_ESCAPE_TRUNCATED,
+    VANTAQ_JSON_ESCAPE_INVALID_ARGUMENT,
+} vantaq_json_escape_status_t;
+
 /**
- * @brief Simple JSON string extractor.
+ * @brief Extract and decode a JSON string field (RFC-style escapes including \\u00XX).
  *
- * Searches for a key in the JSON body and extracts its string value.
- * This is a minimal, robust implementation that handles basic JSON structures.
- *
- * @param json The JSON string to search.
- * @param key The key to look for (e.g., "purpose").
- * @param out_buf Buffer to store the extracted value.
- * @param out_size Size of the output buffer.
- * @return true if found and extracted successfully, false otherwise.
+ * Returns false unless decoding succeeds (`NOT_FOUND`, malformed input, and buffer too small all
+ * yield false). Use `vantaq_json_extract_str_status` to distinguish outcomes.
  */
 bool vantaq_json_extract_str(const char *json, const char *key, char *out_buf, size_t out_size);
 
+vantaq_json_extract_status_t vantaq_json_extract_str_status(const char *json, const char *key,
+                                                            char *out_buf, size_t out_size);
+
 /**
- * @brief Simple JSON integer extractor.
+ * @brief Extract a JSON integer field (decimal).
  *
- * Searches for a key in the JSON body and extracts its integer value.
- *
- * @param json The JSON string to search.
- * @param key The key to look for (e.g., "requested_ttl_seconds").
- * @param out_val Pointer to store the extracted integer.
- * @return true if found and extracted successfully, false otherwise.
+ * Collapses failures into false; use `vantaq_json_extract_long_status` for `NOT_FOUND` vs
+ * malformed.
  */
 bool vantaq_json_extract_long(const char *json, const char *key, long *out_val);
 
+vantaq_json_extract_status_t vantaq_json_extract_long_status(const char *json, const char *key,
+                                                             long *out_val);
+
 /**
- * @brief Escapes a string for inclusion in a JSON value.
+ * @brief Escape a string for inclusion in a JSON string value (`\\u00XX` for other controls).
  *
- * @param src The source string to escape.
- * @param dst The destination buffer.
- * @param dst_size Size of the destination buffer.
- * @return size_t Number of bytes written (excluding null terminator), or 0 on error/truncation.
+ * Returns bytes written excluding the terminating NUL, or `0` if the buffer is unusable or too
+ * small. Use `vantaq_json_escape_str_status` to distinguish truncation from invalid arguments.
  */
 size_t vantaq_json_escape_str(const char *src, char *dst, size_t dst_size);
 
+vantaq_json_escape_status_t vantaq_json_escape_str_status(const char *src, char *dst,
+                                                          size_t dst_size, size_t *out_written);
+
 /**
- * @brief Extract an optional JSON string-array field.
+ * @brief Extract an optional JSON array of strings (decoded per RFC escapes).
  *
- * If the key is absent, returns true and sets `*out_present = false`.
- * If the key exists, the value must be a JSON array of strings.
+ * If the key is absent: returns true and sets `*out_present = false`.
+ * If present: returns true only when the value is a well-formed array of strings (empty string
+ * elements are allowed).
  *
- * @param json JSON payload.
- * @param key Field key.
- * @param out_items Flat output buffer for items (`max_items * item_size`).
- * @param item_size Per-item slot size.
- * @param max_items Maximum items accepted.
- * @param out_count Parsed item count.
- * @param out_present Whether the key exists in input JSON.
- * @return true on success; false on malformed JSON, overflow, or invalid args.
+ * Success (`true`) does **not** imply the key existed — consult `*out_present`.
  */
 bool vantaq_json_extract_str_array(const char *json, const char *key, char *out_items,
                                    size_t item_size, size_t max_items, size_t *out_count,

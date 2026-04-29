@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
 #include "infrastructure/config_loader.h"
+#include "infrastructure/config_loader_internal.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define VANTAQ_MAX_LINE_LEN 512
@@ -34,8 +39,15 @@ enum vantaq_section {
     VANTAQ_SECTION_CHALLENGE,
 };
 
+struct vantaq_retired_config {
+    struct vantaq_retired_config *next;
+    struct vantaq_runtime_config *cfg;
+};
+
 struct vantaq_config_loader {
-    struct vantaq_runtime_config config;
+    _Atomic(struct vantaq_runtime_config *) active_config;
+    struct vantaq_retired_config *retired_head;
+    pthread_mutex_t retired_mu;
     char last_error[VANTAQ_MAX_ERROR_LEN];
 };
 
@@ -63,7 +75,24 @@ static const struct vantaq_string_list *get_list_const(const struct vantaq_runti
 
 static struct vantaq_string_list *get_list_mut(struct vantaq_runtime_config *config,
                                                enum vantaq_capability_list list) {
-    return (struct vantaq_string_list *)get_list_const(config, list);
+    if (config == NULL) {
+        return NULL;
+    }
+
+    switch (list) {
+    case VANTAQ_CAPABILITY_SUPPORTED_CLAIMS:
+        return &config->supported_claims;
+    case VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS:
+        return &config->signature_algorithms;
+    case VANTAQ_CAPABILITY_EVIDENCE_FORMATS:
+        return &config->evidence_formats;
+    case VANTAQ_CAPABILITY_CHALLENGE_MODES:
+        return &config->challenge_modes;
+    case VANTAQ_CAPABILITY_STORAGE_MODES:
+        return &config->storage_modes;
+    default:
+        return NULL;
+    }
 }
 
 static void loader_set_error(struct vantaq_config_loader *loader, const char *fmt, ...)
@@ -174,6 +203,47 @@ static void free_config_lists(struct vantaq_runtime_config *config) {
         free_list(&config->verifiers[i].allowed_apis);
     }
     config->verifiers_count = 0;
+}
+
+static void vantaq_runtime_config_free(struct vantaq_runtime_config *cfg) {
+    if (cfg == NULL) {
+        return;
+    }
+    free_config_lists(cfg);
+    free(cfg);
+}
+
+void vantaq_config_release(const struct vantaq_runtime_config *config) {
+    struct vantaq_runtime_config *cfg = (struct vantaq_runtime_config *)config;
+    if (cfg == NULL) {
+        return;
+    }
+    if (atomic_fetch_sub_explicit(&cfg->ref_count, 1, memory_order_acq_rel) == 1) {
+        vantaq_runtime_config_free(cfg);
+    }
+}
+
+static void retired_push_config(struct vantaq_config_loader *loader,
+                                struct vantaq_runtime_config *cfg) {
+    struct vantaq_retired_config *node;
+
+    if (loader == NULL || cfg == NULL) {
+        return;
+    }
+
+    node = (struct vantaq_retired_config *)malloc(sizeof(*node));
+    if (node == NULL) {
+        vantaq_config_release(cfg);
+        return;
+    }
+
+    node->cfg  = cfg;
+    node->next = NULL;
+
+    (void)pthread_mutex_lock(&loader->retired_mu);
+    node->next           = loader->retired_head;
+    loader->retired_head = node;
+    (void)pthread_mutex_unlock(&loader->retired_mu);
 }
 
 static enum vantaq_config_status copy_string_to_field(struct vantaq_config_loader *loader,
@@ -337,6 +407,14 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
 
         end = cursor;
         while (*end != '\0') {
+            if (*end == '\\') {
+                end++;
+                if (*end == '\0') {
+                    break;
+                }
+                end++;
+                continue;
+            }
             if (*end == '"') {
                 in_quotes = !in_quotes;
             } else if (!in_quotes && *end == ',') {
@@ -377,9 +455,9 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
     return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
 }
 
-static enum vantaq_config_status parse_int(struct vantaq_config_loader *loader,
-                                           const char *field_name, const char *value_raw, int *out,
-                                           bool *seen) {
+static enum vantaq_config_status parse_port(struct vantaq_config_loader *loader,
+                                            const char *field_name, const char *value_raw, int *out,
+                                            bool *seen) {
     char *endptr;
     long number;
     char local[VANTAQ_MAX_FIELD_LEN];
@@ -409,9 +487,10 @@ static enum vantaq_config_status parse_int(struct vantaq_config_loader *loader,
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
+    errno  = 0;
     number = strtol(local, &endptr, 10);
-    if (*endptr != '\0' || number < 1 || number > 65535 || number > INT_MAX) {
-        loader_set_error(loader, "invalid integer for %s", field_name);
+    if (errno == ERANGE || *endptr != '\0' || number < 1 || number > 65535 || number > INT_MAX) {
+        loader_set_error(loader, "invalid port for %s", field_name);
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
@@ -552,6 +631,49 @@ static bool is_valid_capability_item(enum vantaq_capability_list list, const cha
     return false;
 }
 
+static bool is_valid_verifier_role_item(const char *item) {
+    static const char *const allowlist[] = {"verifier",          "owner-admin", "attestation_read",
+                                            "attestation_write", "policy_read", NULL};
+    size_t i;
+
+    if (item == NULL || item[0] == '\0') {
+        return false;
+    }
+
+    for (i = 0; allowlist[i] != NULL; i++) {
+        if (strcmp(allowlist[i], item) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool is_valid_verifier_allowed_api_item(const char *item) {
+    const char *path;
+
+    if (item == NULL || item[0] == '\0') {
+        return false;
+    }
+    if (strcmp(item, "*") == 0) {
+        return true;
+    }
+
+    if (strncmp(item, "GET ", 4) == 0) {
+        path = item + 4;
+    } else if (strncmp(item, "POST ", 5) == 0) {
+        path = item + 5;
+    } else {
+        return false;
+    }
+
+    if (path[0] == '\0' || strncmp(path, "/v1/", 4) != 0) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool is_valid_ipv4_cidr(const char *cidr) {
     char local[VANTAQ_MAX_FIELD_LEN];
     char *slash;
@@ -586,9 +708,56 @@ static bool is_valid_ipv4_cidr(const char *cidr) {
         return false;
     }
 
+    errno  = 0;
     prefix = strtol(prefix_text, &endptr, 10);
-    if (*endptr != '\0' || prefix < 0 || prefix > 32) {
+    if (errno == ERANGE || *endptr != '\0' || prefix < 0 || prefix > 32) {
         return false;
+    }
+
+    return true;
+}
+
+static bool is_valid_dns_hostname(const char *host) {
+    size_t len;
+    size_t i;
+    size_t label_start;
+
+    if (host == NULL) {
+        return false;
+    }
+
+    len = strlen(host);
+    if (len == 0 || len > 253U) {
+        return false;
+    }
+
+    if (host[0] == '.' || host[len - 1U] == '.') {
+        return false;
+    }
+
+    label_start = 0;
+    for (i = 0; i <= len; i++) {
+        if (host[i] == '.' || host[i] == '\0') {
+            size_t label_len = i - label_start;
+            size_t j;
+
+            if (label_len == 0 || label_len > 63U) {
+                return false;
+            }
+            if (!isalnum((unsigned char)host[label_start])) {
+                return false;
+            }
+            if (!isalnum((unsigned char)host[i - 1U])) {
+                return false;
+            }
+            for (j = label_start; j < i; j++) {
+                unsigned char c = (unsigned char)host[j];
+                if (!isalnum(c) && c != '-') {
+                    return false;
+                }
+            }
+            label_start = i + 1U;
+        }
     }
 
     return true;
@@ -597,7 +766,6 @@ static bool is_valid_ipv4_cidr(const char *cidr) {
 static bool is_valid_listen_host(const char *host) {
     struct in_addr addr4;
     struct in6_addr addr6;
-    const char *p;
 
     if (host == NULL || host[0] == '\0') {
         return false;
@@ -611,13 +779,36 @@ static bool is_valid_listen_host(const char *host) {
         return true;
     }
 
-    for (p = host; *p != '\0'; p++) {
-        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-') {
-            return false;
-        }
+    return is_valid_dns_hostname(host);
+}
+
+static bool can_open_readonly(const char *path) {
+    int fd;
+
+    if (path == NULL || path[0] == '\0') {
+        return false;
     }
 
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return false;
+    }
+    (void)close(fd);
     return true;
+}
+
+static bool has_private_key_permissions(const char *path) {
+    struct stat st;
+
+    if (path == NULL || path[0] == '\0') {
+        return false;
+    }
+
+    if (stat(path, &st) != 0) {
+        return false;
+    }
+
+    return (st.st_mode & (S_IRWXG | S_IRWXO)) == 0;
 }
 
 static bool list_contains(const struct vantaq_string_list *list, const char *needle) {
@@ -634,226 +825,6 @@ static bool list_contains(const struct vantaq_string_list *list, const char *nee
     }
 
     return false;
-}
-
-static enum vantaq_config_status validate_config(struct vantaq_config_loader *loader,
-                                                 const struct vantaq_runtime_config *config) {
-    size_t i;
-    size_t j;
-
-    if (!config->has_service_listen_host) {
-        loader_set_error(loader, "missing required field %s", "server.listen_address");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!is_valid_listen_host(config->service_listen_host)) {
-        loader_set_error(loader, "invalid server.listen_address: %s", config->service_listen_host);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_service_listen_port) {
-        loader_set_error(loader, "missing required field %s", "server.listen_port");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_service_version) {
-        loader_set_error(loader, "missing required field %s", "server.version");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_tls_enabled) {
-        loader_set_error(loader, "missing required field %s", "server.tls.enabled");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_tls_server_cert_path) {
-        loader_set_error(loader, "missing required field %s", "server.tls.server_cert_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_tls_server_key_path) {
-        loader_set_error(loader, "missing required field %s", "server.tls.server_key_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_tls_trusted_client_ca_path) {
-        loader_set_error(loader, "missing required field %s", "server.tls.trusted_client_ca_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_tls_require_client_cert) {
-        loader_set_error(loader, "missing required field %s", "server.tls.require_client_cert");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (access(config->tls_server_cert_path, R_OK) != 0) {
-        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_cert_path",
-                         config->tls_server_cert_path);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (access(config->tls_server_key_path, R_OK) != 0) {
-        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_key_path",
-                         config->tls_server_key_path);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (access(config->tls_trusted_client_ca_path, R_OK) != 0) {
-        loader_set_error(loader, "path not readable for %s: %s",
-                         "server.tls.trusted_client_ca_path", config->tls_trusted_client_ca_path);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_device_id) {
-        loader_set_error(loader, "missing required field %s", "device_identity.device_id");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_model) {
-        loader_set_error(loader, "missing required field %s", "device_identity.model");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_serial_number) {
-        loader_set_error(loader, "missing required field %s", "device_identity.serial_number");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_manufacturer) {
-        loader_set_error(loader, "missing required field %s", "device_identity.manufacturer");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_firmware_version) {
-        loader_set_error(loader, "missing required field %s", "device_identity.firmware_version");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_device_priv_key_path) {
-        loader_set_error(loader, "missing required field %s",
-                         "device_identity.device_priv_key_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_device_pub_key_path) {
-        loader_set_error(loader, "missing required field %s",
-                         "device_identity.device_pub_key_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (access(config->device_priv_key_path, R_OK) != 0) {
-        loader_set_error(loader, "path not readable for %s: %s",
-                         "device_identity.device_priv_key_path", config->device_priv_key_path);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (access(config->device_pub_key_path, R_OK) != 0) {
-        loader_set_error(loader, "path not readable for %s: %s",
-                         "device_identity.device_pub_key_path", config->device_pub_key_path);
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_measurement_firmware_path) {
-        loader_set_error(loader, "missing required field %s", "measurement.firmware_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_measurement_security_config_path) {
-        loader_set_error(loader, "missing required field %s", "measurement.security_config_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_measurement_agent_binary_path) {
-        loader_set_error(loader, "missing required field %s", "measurement.agent_binary_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_measurement_boot_state_path) {
-        loader_set_error(loader, "missing required field %s", "measurement.boot_state_path");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_measurement_max_file_bytes) {
-        loader_set_error(loader, "missing required field %s",
-                         "measurement.max_measurement_file_bytes");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_supported_claims) {
-        loader_set_error(loader, "missing required field %s", "capabilities.supported_claims");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!list_contains(&config->supported_claims, "device_identity")) {
-        loader_set_error(loader, "missing required capability %s", "device_identity");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_signature_algorithms) {
-        loader_set_error(loader, "missing required field %s", "capabilities.signature_algorithms");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_evidence_formats) {
-        loader_set_error(loader, "missing required field %s", "capabilities.evidence_formats");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_challenge_modes) {
-        loader_set_error(loader, "missing required field %s", "capabilities.challenge_modes");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    if (!config->has_storage_modes) {
-        loader_set_error(loader, "missing required field %s", "capabilities.storage_modes");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-
-    // Semantic validation of capability items
-    {
-        enum vantaq_capability_list lists[] = {
-            VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS,
-            VANTAQ_CAPABILITY_EVIDENCE_FORMATS, VANTAQ_CAPABILITY_CHALLENGE_MODES,
-            VANTAQ_CAPABILITY_STORAGE_MODES};
-        size_t l, i;
-        for (l = 0; l < 5; l++) {
-            const struct vantaq_string_list *list_data = get_list_const(config, lists[l]);
-            if (list_data == NULL) {
-                continue;
-            }
-            for (i = 0; i < list_data->count; i++) {
-                if (!is_valid_capability_item(lists[l], list_data->items[i])) {
-                    loader_set_error(loader, "unsupported capability '%s' in list %d",
-                                     list_data->items[i], (int)lists[l]);
-                    return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-                }
-            }
-        }
-    }
-
-    if (config->has_allowed_subnets) {
-        for (i = 0; i < config->allowed_subnets.count; i++) {
-            if (!is_valid_ipv4_cidr(config->allowed_subnets.items[i])) {
-                loader_set_error(loader, "invalid CIDR in %s", config->allowed_subnets.items[i]);
-                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-            }
-        }
-    }
-
-    if (!config->has_verifiers || config->verifiers_count == 0) {
-        loader_set_error(loader, "missing required field %s", "verifiers");
-        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-    }
-    for (i = 0; i < config->verifiers_count; i++) {
-        const struct vantaq_verifier_config *verifier = &config->verifiers[i];
-        if (!verifier->has_verifier_id || verifier->verifier_id[0] == '\0') {
-            loader_set_error(loader, "missing required field verifiers[%zu].verifier_id", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (!verifier->has_cert_subject_cn || verifier->cert_subject_cn[0] == '\0') {
-            loader_set_error(loader, "missing required field verifiers[%zu].cert_subject_cn", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (!verifier->has_cert_san_uri || verifier->cert_san_uri[0] == '\0') {
-            loader_set_error(loader, "missing required field verifiers[%zu].cert_san_uri", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (!verifier->has_status || verifier->status[0] == '\0') {
-            loader_set_error(loader, "missing required field verifiers[%zu].status", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (strcmp(verifier->status, "active") != 0 && strcmp(verifier->status, "inactive") != 0) {
-            loader_set_error(loader, "invalid verifier status verifiers[%zu].status: %s", i,
-                             verifier->status);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (!verifier->has_roles || verifier->roles.count == 0) {
-            loader_set_error(loader, "missing required field verifiers[%zu].roles", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-        if (!verifier->has_allowed_apis || verifier->allowed_apis.count == 0) {
-            loader_set_error(loader, "missing required field verifiers[%zu].allowed_apis", i);
-            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-        }
-
-        for (j = i + 1; j < config->verifiers_count; j++) {
-            if (strcmp(verifier->verifier_id, config->verifiers[j].verifier_id) == 0) {
-                loader_set_error(loader, "duplicate verifier_id: %s", verifier->verifier_id);
-                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
-            }
-        }
-    }
-
-    return VANTAQ_CONFIG_STATUS_OK;
 }
 
 static enum vantaq_capability_list parse_capability_key(const char *key, bool *ok) {
@@ -912,6 +883,275 @@ static bool mark_capability_seen(struct vantaq_runtime_config *config,
     }
 
     return true;
+}
+
+static enum vantaq_config_status validate_config(struct vantaq_config_loader *loader,
+                                                 const struct vantaq_runtime_config *config) {
+    size_t i;
+    size_t j;
+
+    if (!config->has_service_listen_host) {
+        loader_set_error(loader, "missing required field %s", "server.listen_address");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!is_valid_listen_host(config->service_listen_host)) {
+        loader_set_error(loader, "invalid server.listen_address: %s", config->service_listen_host);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_service_listen_port) {
+        loader_set_error(loader, "missing required field %s", "server.listen_port");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_service_version) {
+        loader_set_error(loader, "missing required field %s", "server.version");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_enabled) {
+        loader_set_error(loader, "missing required field %s", "server.tls.enabled");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_server_cert_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.server_cert_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_server_key_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.server_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_trusted_client_ca_path) {
+        loader_set_error(loader, "missing required field %s", "server.tls.trusted_client_ca_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_tls_require_client_cert) {
+        loader_set_error(loader, "missing required field %s", "server.tls.require_client_cert");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!can_open_readonly(config->tls_server_cert_path)) {
+        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_cert_path",
+                         config->tls_server_cert_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!can_open_readonly(config->tls_server_key_path)) {
+        loader_set_error(loader, "path not readable for %s: %s", "server.tls.server_key_path",
+                         config->tls_server_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!can_open_readonly(config->tls_trusted_client_ca_path)) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "server.tls.trusted_client_ca_path", config->tls_trusted_client_ca_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_device_id) {
+        loader_set_error(loader, "missing required field %s", "device_identity.device_id");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_model) {
+        loader_set_error(loader, "missing required field %s", "device_identity.model");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_serial_number) {
+        loader_set_error(loader, "missing required field %s", "device_identity.serial_number");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_manufacturer) {
+        loader_set_error(loader, "missing required field %s", "device_identity.manufacturer");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_firmware_version) {
+        loader_set_error(loader, "missing required field %s", "device_identity.firmware_version");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_device_priv_key_path) {
+        loader_set_error(loader, "missing required field %s",
+                         "device_identity.device_priv_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_device_pub_key_path) {
+        loader_set_error(loader, "missing required field %s",
+                         "device_identity.device_pub_key_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!can_open_readonly(config->device_priv_key_path)) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "device_identity.device_priv_key_path", config->device_priv_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!has_private_key_permissions(config->device_priv_key_path)) {
+        loader_set_error(loader, "insecure permissions for %s: %s",
+                         "device_identity.device_priv_key_path", config->device_priv_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!can_open_readonly(config->device_pub_key_path)) {
+        loader_set_error(loader, "path not readable for %s: %s",
+                         "device_identity.device_pub_key_path", config->device_pub_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!has_private_key_permissions(config->tls_server_key_path)) {
+        loader_set_error(loader, "insecure permissions for %s: %s", "server.tls.server_key_path",
+                         config->tls_server_key_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_firmware_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.firmware_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_security_config_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.security_config_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_agent_binary_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.agent_binary_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_boot_state_path) {
+        loader_set_error(loader, "missing required field %s", "measurement.boot_state_path");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_measurement_max_file_bytes) {
+        loader_set_error(loader, "missing required field %s",
+                         "measurement.max_measurement_file_bytes");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_supported_claims) {
+        loader_set_error(loader, "missing required field %s", "capabilities.supported_claims");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!list_contains(&config->supported_claims, "device_identity")) {
+        loader_set_error(loader, "missing required capability %s", "device_identity");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_signature_algorithms) {
+        loader_set_error(loader, "missing required field %s", "capabilities.signature_algorithms");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_evidence_formats) {
+        loader_set_error(loader, "missing required field %s", "capabilities.evidence_formats");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_challenge_modes) {
+        loader_set_error(loader, "missing required field %s", "capabilities.challenge_modes");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (!config->has_storage_modes) {
+        loader_set_error(loader, "missing required field %s", "capabilities.storage_modes");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+
+    // Semantic validation of capability items
+    {
+        enum vantaq_capability_list lists[] = {
+            VANTAQ_CAPABILITY_SUPPORTED_CLAIMS, VANTAQ_CAPABILITY_SIGNATURE_ALGORITHMS,
+            VANTAQ_CAPABILITY_EVIDENCE_FORMATS, VANTAQ_CAPABILITY_CHALLENGE_MODES,
+            VANTAQ_CAPABILITY_STORAGE_MODES};
+        size_t l, k;
+        for (l = 0; l < 5; l++) {
+            const struct vantaq_string_list *list_data = get_list_const(config, lists[l]);
+            if (list_data == NULL) {
+                continue;
+            }
+            for (k = 0; k < list_data->count; k++) {
+                if (!is_valid_capability_item(lists[l], list_data->items[k])) {
+                    loader_set_error(loader, "unsupported capability '%s' in list %d",
+                                     list_data->items[k], (int)lists[l]);
+                    return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+                }
+            }
+        }
+    }
+
+    if (config->has_allowed_subnets) {
+        for (i = 0; i < config->allowed_subnets.count; i++) {
+            if (!is_valid_ipv4_cidr(config->allowed_subnets.items[i])) {
+                loader_set_error(loader, "invalid CIDR in %s", config->allowed_subnets.items[i]);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+    }
+
+    if (!config->has_verifiers || config->verifiers_count == 0) {
+        loader_set_error(loader, "missing required field %s", "verifiers");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+
+    /* O(n²) verifier ID duplicate check. Bounded by VANTAQ_MAX_LIST_ITEMS (64), so it is
+     * computationally safe. */
+    for (i = 0; i < config->verifiers_count; i++) {
+        const struct vantaq_verifier_config *verifier = &config->verifiers[i];
+        if (!verifier->has_verifier_id || verifier->verifier_id[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].verifier_id", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_cert_subject_cn || verifier->cert_subject_cn[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].cert_subject_cn", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_cert_san_uri || verifier->cert_san_uri[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].cert_san_uri", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_status || verifier->status[0] == '\0') {
+            loader_set_error(loader, "missing required field verifiers[%zu].status", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (strcmp(verifier->status, "active") != 0 && strcmp(verifier->status, "inactive") != 0) {
+            loader_set_error(loader, "invalid verifier status verifiers[%zu].status: %s", i,
+                             verifier->status);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_roles || verifier->roles.count == 0) {
+            loader_set_error(loader, "missing required field verifiers[%zu].roles", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        if (!verifier->has_allowed_apis || verifier->allowed_apis.count == 0) {
+            loader_set_error(loader, "missing required field verifiers[%zu].allowed_apis", i);
+            return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+        }
+        for (j = 0; j < verifier->roles.count; j++) {
+            if (!is_valid_verifier_role_item(verifier->roles.items[j])) {
+                loader_set_error(loader, "invalid role verifiers[%zu].roles[%zu]: %s", i, j,
+                                 verifier->roles.items[j]);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+        for (j = 0; j < verifier->allowed_apis.count; j++) {
+            if (!is_valid_verifier_allowed_api_item(verifier->allowed_apis.items[j])) {
+                loader_set_error(loader, "invalid allowed api verifiers[%zu].allowed_apis[%zu]: %s",
+                                 i, j, verifier->allowed_apis.items[j]);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+
+        for (j = i + 1; j < config->verifiers_count; j++) {
+            if (strcmp(verifier->verifier_id, config->verifiers[j].verifier_id) == 0) {
+                loader_set_error(loader, "duplicate verifier_id: %s", verifier->verifier_id);
+                return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+            }
+        }
+    }
+
+    if (config->has_challenge_ttl_seconds &&
+        (config->challenge_ttl_seconds < 5 || config->challenge_ttl_seconds > 86400)) {
+        loader_set_error(loader, "challenge.ttl_seconds must be between 5 and 86400");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_challenge_max_global &&
+        (config->challenge_max_global < 10 || config->challenge_max_global > 1000000)) {
+        loader_set_error(loader, "challenge.max_global must be between 10 and 1000000");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_challenge_max_per_verifier &&
+        (config->challenge_max_per_verifier < 1 || config->challenge_max_per_verifier > 100000)) {
+        loader_set_error(loader, "challenge.max_per_verifier must be between 1 and 100000");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_challenge_max_global && config->has_challenge_max_per_verifier &&
+        config->challenge_max_per_verifier > config->challenge_max_global) {
+        loader_set_error(loader, "challenge.max_per_verifier must be less than or equal to "
+                                 "challenge.max_global");
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+
+    return VANTAQ_CONFIG_STATUS_OK;
 }
 
 static enum vantaq_config_status parse_verifier_field(struct vantaq_config_loader *loader,
@@ -999,6 +1239,14 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
     VANTAQ_ZERO_STRUCT(line);
 
+    enum vantaq_config_status parse_rc = VANTAQ_CONFIG_STATUS_OK;
+
+#define CONFIG_PARSE_RETURN(V)                                                                     \
+    do {                                                                                           \
+        parse_rc = (V);                                                                            \
+        goto parse_done;                                                                           \
+    } while (0)
+
     while (fgets(line, sizeof(line), fp) != NULL) {
         size_t line_len = strlen(line);
         char *cursor;
@@ -1011,7 +1259,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         if (line_len > 0 && line[line_len - 1] != '\n' && !feof(fp)) {
             loader_set_error(loader, "line exceeds maximum length of %d characters",
                              VANTAQ_MAX_LINE_LEN - 2);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         rtrim(line);
@@ -1020,7 +1268,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         }
         if (line[0] == '\t') {
             loader_set_error(loader, "tabs are not allowed for indentation");
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         cursor = line;
@@ -1035,7 +1283,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_list_item(loader, cursor + 1, get_list_mut(tmp, active_list),
                                      "capabilities list");
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1045,7 +1293,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_list_item(loader, cursor + 1, &tmp->allowed_subnets,
                                      "network_access.allowed_subnets");
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1059,26 +1307,29 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
                 if (tmp->verifiers_count >= VANTAQ_MAX_LIST_ITEMS) {
                     loader_set_error(loader, "too many verifiers");
-                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                    CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
                 }
 
                 verifier = &tmp->verifiers[tmp->verifiers_count];
                 VANTAQ_ZERO_STRUCT(*verifier);
-                tmp->verifiers_count++;
-                has_active_verifier                   = true;
-                active_verifier_index                 = tmp->verifiers_count - 1;
+
+                has_active_verifier   = true;
+                active_verifier_index = tmp->verifiers_count;
+                /* Note: We increment verifiers_count ONLY after successful initialization
+                 * (addresses C3). */
                 has_active_verifier_roles_list        = false;
                 has_active_verifier_allowed_apis_list = false;
 
                 verifier_cursor = trim(cursor + 1);
                 if (verifier_cursor[0] == '\0') {
+                    tmp->verifiers_count++;
                     continue;
                 }
 
                 verifier_colon = strchr(verifier_cursor, ':');
                 if (verifier_colon == NULL) {
                     loader_set_error(loader, "invalid verifier entry");
-                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                    CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
                 }
 
                 *verifier_colon = '\0';
@@ -1089,8 +1340,9 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           &has_active_verifier_roles_list,
                                           &has_active_verifier_allowed_apis_list);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
+                tmp->verifiers_count++;
                 continue;
             }
 
@@ -1099,7 +1351,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 if (has_active_verifier_roles_list) {
                     rc = parse_list_item(loader, cursor + 1, &verifier->roles, "verifiers.roles");
                     if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                        return rc;
+                        CONFIG_PARSE_RETURN(rc);
                     }
                     continue;
                 }
@@ -1107,14 +1359,14 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     rc = parse_list_item(loader, cursor + 1, &verifier->allowed_apis,
                                          "verifiers.allowed_apis");
                     if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                        return rc;
+                        CONFIG_PARSE_RETURN(rc);
                     }
                     continue;
                 }
             }
 
             loader_set_error(loader, "invalid list indentation");
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         has_active_capability_list            = false;
@@ -1125,7 +1377,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         colon = strchr(cursor, ':');
         if (colon == NULL) {
             loader_set_error(loader, "missing ':' in yaml line");
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         *colon = '\0';
@@ -1135,66 +1387,46 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
         if (indent == 0) {
             if (value[0] != '\0') {
                 loader_set_error(loader, "top-level key must be an object");
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
             }
 
-            if (strcmp(key, "service") == 0) {
-                loader_set_error(loader, "unknown top-level key %s", key);
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
-            }
             if (strcmp(key, "server") == 0) {
-                section                        = VANTAQ_SECTION_SERVER;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_SERVER;
                 continue;
             }
             if (strcmp(key, "device_identity") == 0) {
-                section                        = VANTAQ_SECTION_DEVICE_IDENTITY;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_DEVICE_IDENTITY;
                 continue;
             }
             if (strcmp(key, "measurement") == 0) {
-                section                        = VANTAQ_SECTION_MEASUREMENT;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_MEASUREMENT;
                 continue;
             }
             if (strcmp(key, "capabilities") == 0) {
-                section                        = VANTAQ_SECTION_CAPABILITIES;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_CAPABILITIES;
                 continue;
             }
             if (strcmp(key, "network_access") == 0) {
-                section                        = VANTAQ_SECTION_NETWORK_ACCESS;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_NETWORK_ACCESS;
                 continue;
             }
             if (strcmp(key, "audit") == 0) {
-                section                        = VANTAQ_SECTION_AUDIT;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_AUDIT;
                 continue;
             }
             if (strcmp(key, "verifiers") == 0) {
-                section                        = VANTAQ_SECTION_VERIFIERS;
-                has_active_verifier            = false;
-                tmp->has_verifiers             = true;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section             = VANTAQ_SECTION_VERIFIERS;
+                has_active_verifier = false;
+                tmp->has_verifiers  = true;
                 continue;
             }
             if (strcmp(key, "challenge") == 0) {
-                section                        = VANTAQ_SECTION_CHALLENGE;
-                has_active_capability_list     = false;
-                has_active_network_subnet_list = false;
+                section = VANTAQ_SECTION_CHALLENGE;
                 continue;
             }
 
             loader_set_error(loader, "unknown top-level key %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_SERVER_TLS && indent == 2) {
@@ -1203,12 +1435,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
         if (section == VANTAQ_SECTION_SERVER_TLS && indent != 4) {
             loader_set_error(loader, "unsupported yaml indentation");
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
         if (section != VANTAQ_SECTION_SERVER_TLS && section != VANTAQ_SECTION_VERIFIERS &&
             indent != 2) {
             loader_set_error(loader, "unsupported yaml indentation");
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_SERVER) {
@@ -1217,15 +1449,15 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     loader, "server.listen_address", value, tmp->service_listen_host,
                     sizeof(tmp->service_listen_host), &tmp->has_service_listen_host);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
             if (strcmp(key, "listen_port") == 0) {
-                rc = parse_int(loader, "server.listen_port", value, &tmp->service_listen_port,
-                               &tmp->has_service_listen_port);
+                rc = parse_port(loader, "server.listen_port", value, &tmp->service_listen_port,
+                                &tmp->has_service_listen_port);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1233,21 +1465,21 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = copy_string_to_field(loader, "server.version", value, tmp->service_version,
                                           sizeof(tmp->service_version), &tmp->has_service_version);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
             if (strcmp(key, "tls") == 0) {
                 if (value[0] != '\0') {
                     loader_set_error(loader, "server.tls must be an object");
-                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                    CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
                 }
                 section = VANTAQ_SECTION_SERVER_TLS;
                 continue;
             }
 
             loader_set_error(loader, "unknown server field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_SERVER_TLS) {
@@ -1255,7 +1487,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_bool(loader, "server.tls.enabled", value, &tmp->tls_enabled,
                                 &tmp->has_tls_enabled);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1264,7 +1496,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     loader, "server.tls.server_cert_path", value, tmp->tls_server_cert_path,
                     sizeof(tmp->tls_server_cert_path), &tmp->has_tls_server_cert_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1273,7 +1505,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     loader, "server.tls.server_key_path", value, tmp->tls_server_key_path,
                     sizeof(tmp->tls_server_key_path), &tmp->has_tls_server_key_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1283,7 +1515,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           sizeof(tmp->tls_trusted_client_ca_path),
                                           &tmp->has_tls_trusted_client_ca_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1291,13 +1523,13 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_bool(loader, "server.tls.require_client_cert", value,
                                 &tmp->tls_require_client_cert, &tmp->has_tls_require_client_cert);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown server.tls field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_DEVICE_IDENTITY) {
@@ -1306,7 +1538,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     copy_string_to_field(loader, "device_identity.device_id", value, tmp->device_id,
                                          sizeof(tmp->device_id), &tmp->has_device_id);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1314,7 +1546,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = copy_string_to_field(loader, "device_identity.model", value, tmp->model,
                                           sizeof(tmp->model), &tmp->has_model);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1323,7 +1555,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           tmp->serial_number, sizeof(tmp->serial_number),
                                           &tmp->has_serial_number);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1332,7 +1564,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           tmp->manufacturer, sizeof(tmp->manufacturer),
                                           &tmp->has_manufacturer);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1341,7 +1573,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           tmp->firmware_version, sizeof(tmp->firmware_version),
                                           &tmp->has_firmware_version);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1351,7 +1583,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           sizeof(tmp->device_priv_key_path),
                                           &tmp->has_device_priv_key_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1360,13 +1592,13 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     loader, "device_identity.device_pub_key_path", value, tmp->device_pub_key_path,
                     sizeof(tmp->device_pub_key_path), &tmp->has_device_pub_key_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown device_identity field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_MEASUREMENT) {
@@ -1375,7 +1607,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                     loader, "measurement.firmware_path", value, tmp->measurement_firmware_path,
                     sizeof(tmp->measurement_firmware_path), &tmp->has_measurement_firmware_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1385,7 +1617,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           sizeof(tmp->measurement_security_config_path),
                                           &tmp->has_measurement_security_config_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1395,7 +1627,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           sizeof(tmp->measurement_agent_binary_path),
                                           &tmp->has_measurement_agent_binary_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1405,7 +1637,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                           sizeof(tmp->measurement_boot_state_path),
                                           &tmp->has_measurement_boot_state_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1414,13 +1646,13 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                   &tmp->measurement_max_file_bytes,
                                   &tmp->has_measurement_max_file_bytes);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown measurement field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_CAPABILITIES) {
@@ -1429,12 +1661,12 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             active_list = parse_capability_key(key, &ok);
             if (!ok) {
                 loader_set_error(loader, "unknown capabilities field %s", key);
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
             }
 
             if (!mark_capability_seen(tmp, active_list)) {
                 loader_set_error(loader, "duplicate capability field %s", key);
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
             }
 
             free_list(get_list_mut(tmp, active_list));
@@ -1446,7 +1678,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
 
             rc = parse_inline_list(loader, value, get_list_mut(tmp, active_list), key);
             if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                return rc;
+                CONFIG_PARSE_RETURN(rc);
             }
             continue;
         }
@@ -1455,7 +1687,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             if (strcmp(key, "allowed_subnets") == 0) {
                 if (tmp->has_allowed_subnets) {
                     loader_set_error(loader, "duplicate field network_access.allowed_subnets");
-                    return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                    CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
                 }
                 tmp->has_allowed_subnets = true;
                 free_list(&tmp->allowed_subnets);
@@ -1468,7 +1700,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_inline_list(loader, value, &tmp->allowed_subnets,
                                        "network_access.allowed_subnets");
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1477,13 +1709,13 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_bool(loader, "network_access.dev_allow_all_networks", value,
                                 &tmp->dev_allow_all_networks, &tmp->has_dev_allow_all_networks);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown network_access field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_AUDIT) {
@@ -1491,7 +1723,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_size_t(loader, "audit.max_bytes", value, &tmp->audit_log_max_bytes,
                                   &tmp->has_audit_log_max_bytes);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1499,13 +1731,13 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = copy_string_to_field(loader, "audit.path", value, tmp->audit_log_path,
                                           sizeof(tmp->audit_log_path), &tmp->has_audit_log_path);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown audit field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_CHALLENGE) {
@@ -1513,7 +1745,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_size_t(loader, "challenge.ttl_seconds", value,
                                   &tmp->challenge_ttl_seconds, &tmp->has_challenge_ttl_seconds);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1521,7 +1753,7 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 rc = parse_size_t(loader, "challenge.max_global", value, &tmp->challenge_max_global,
                                   &tmp->has_challenge_max_global);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
@@ -1530,98 +1762,183 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                                   &tmp->challenge_max_per_verifier,
                                   &tmp->has_challenge_max_per_verifier);
                 if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                    return rc;
+                    CONFIG_PARSE_RETURN(rc);
                 }
                 continue;
             }
 
             loader_set_error(loader, "unknown challenge field %s", key);
-            return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
         if (section == VANTAQ_SECTION_VERIFIERS) {
             struct vantaq_verifier_config *verifier;
             if (indent != 4 || !has_active_verifier ||
-                active_verifier_index >= tmp->verifiers_count) {
+                active_verifier_index >= VANTAQ_MAX_LIST_ITEMS) {
                 loader_set_error(loader, "invalid verifier field indentation");
-                return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+                CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
             }
 
             verifier = &tmp->verifiers[active_verifier_index];
             rc = parse_verifier_field(loader, verifier, key, value, &has_active_verifier_roles_list,
                                       &has_active_verifier_allowed_apis_list);
             if (rc != VANTAQ_CONFIG_STATUS_OK) {
-                return rc;
+                CONFIG_PARSE_RETURN(rc);
             }
             continue;
         }
 
         loader_set_error(loader, "field found outside section");
-        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+        CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
     }
 
     if (ferror(fp)) {
         loader_set_error(loader, "failed to read config file");
-        return VANTAQ_CONFIG_STATUS_IO_ERROR;
+        parse_rc = VANTAQ_CONFIG_STATUS_IO_ERROR;
+        goto parse_done;
     }
 
-    return validate_config(loader, tmp);
+    parse_rc = validate_config(loader, tmp);
+
+parse_done:
+    /* Local cleanup label per Rule 1.3 to handle partial allocations on error. */
+    if (parse_rc != VANTAQ_CONFIG_STATUS_OK) {
+        free_config_lists(tmp);
+    }
+#undef CONFIG_PARSE_RETURN
+    return parse_rc;
 }
 
 struct vantaq_config_loader *vantaq_config_loader_create(void) {
+    struct vantaq_runtime_config *initial;
     struct vantaq_config_loader *loader = (struct vantaq_config_loader *)calloc(1, sizeof(*loader));
+
+    if (loader == NULL) {
+        return NULL;
+    }
+
+    if (pthread_mutex_init(&loader->retired_mu, NULL) != 0) {
+        free(loader);
+        return NULL;
+    }
+
+    initial = (struct vantaq_runtime_config *)calloc(1, sizeof(*initial));
+    if (initial == NULL) {
+        (void)pthread_mutex_destroy(&loader->retired_mu);
+        free(loader);
+        return NULL;
+    }
+    initial->cbSize = sizeof(*initial);
+    atomic_init(&initial->ref_count, 1);
+    atomic_store_explicit(&loader->active_config, initial, memory_order_relaxed);
+
     return loader;
 }
 
 void vantaq_config_loader_destroy(struct vantaq_config_loader *loader) {
+    struct vantaq_runtime_config *cfg;
+    struct vantaq_retired_config *node;
+
     if (loader == NULL) {
         return;
     }
 
-    free_config_lists(&loader->config);
+    cfg = atomic_exchange_explicit(&loader->active_config, NULL, memory_order_acq_rel);
+    if (cfg != NULL) {
+        vantaq_config_release(cfg);
+    }
+
+    node = loader->retired_head;
+    while (node != NULL) {
+        struct vantaq_retired_config *next = node->next;
+        vantaq_config_release(node->cfg);
+        free(node);
+        node = next;
+    }
+
+    (void)pthread_mutex_destroy(&loader->retired_mu);
     free(loader);
 }
 
 enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader *loader,
                                                     const char *path) {
-    struct vantaq_runtime_config tmp;
-    enum vantaq_config_status rc;
-    FILE *fp;
-    char resolved_path[VANTAQ_MAX_PATH_LEN];
-
     if (loader == NULL) {
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
     }
-
-    loader->last_error[0] = '\0';
-    VANTAQ_ZERO_STRUCT(tmp);
-    tmp.cbSize = sizeof(tmp);
 
     if (path == NULL || path[0] == '\0') {
         path = VANTAQ_DEFAULT_CONFIG_PATH;
     }
 
-    if (strlen(path) >= sizeof(resolved_path)) {
+    if (strlen(path) >= VANTAQ_MAX_PATH_LEN) {
         loader_set_error(loader, "config path too long");
         return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
     }
-    memcpy(resolved_path, path, strlen(path) + 1);
+    {
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL) {
+            loader_set_error(loader, "unable to open config file: %s", path);
+            return VANTAQ_CONFIG_STATUS_IO_ERROR;
+        }
+        {
+            int fd                       = fileno(fp);
+            enum vantaq_config_status rc = vantaq_config_loader_load_fd(loader, fd, path);
+            (void)fclose(fp);
+            return rc;
+        }
+    }
+}
 
-    fp = fopen(resolved_path, "r");
-    if (fp == NULL) {
-        loader_set_error(loader, "unable to open config file: %s", resolved_path);
+enum vantaq_config_status vantaq_config_loader_load_fd(struct vantaq_config_loader *loader, int fd,
+                                                       const char *source_name) {
+    struct vantaq_runtime_config *parsed = NULL;
+    enum vantaq_config_status rc;
+    FILE *fp;
+    int dup_fd;
+    const char *source = source_name != NULL ? source_name : "<fd>";
+    struct vantaq_runtime_config *prev;
+
+    if (loader == NULL || fd < 0) {
+        return VANTAQ_CONFIG_STATUS_INVALID_ARGUMENT;
+    }
+
+    loader->last_error[0] = '\0';
+
+    parsed = (struct vantaq_runtime_config *)calloc(1, sizeof(*parsed));
+    if (parsed == NULL) {
+        loader_set_error(loader, "out of memory allocating config");
+        return VANTAQ_CONFIG_STATUS_IO_ERROR;
+    }
+    parsed->cbSize = sizeof(*parsed);
+    atomic_init(&parsed->ref_count, 1);
+
+    dup_fd = dup(fd);
+    if (dup_fd < 0) {
+        loader_set_error(loader, "unable to duplicate config fd: %s", source);
+        free(parsed);
         return VANTAQ_CONFIG_STATUS_IO_ERROR;
     }
 
-    rc = parse_config_file(loader, fp, &tmp);
+    fp = fdopen(dup_fd, "r");
+    if (fp == NULL) {
+        (void)close(dup_fd);
+        loader_set_error(loader, "unable to open config stream: %s", source);
+        free(parsed);
+        return VANTAQ_CONFIG_STATUS_IO_ERROR;
+    }
+
+    rc = parse_config_file(loader, fp, parsed);
     (void)fclose(fp);
     if (rc != VANTAQ_CONFIG_STATUS_OK) {
-        free_config_lists(&tmp);
+        vantaq_config_release(parsed);
         return rc;
     }
 
-    free_config_lists(&loader->config);
-    loader->config = tmp;
+    prev = atomic_exchange_explicit(&loader->active_config, parsed, memory_order_acq_rel);
+    if (prev != NULL) {
+        retired_push_config(loader, prev);
+    }
+
     return VANTAQ_CONFIG_STATUS_OK;
 }
 
@@ -1634,10 +1951,19 @@ const char *vantaq_config_loader_last_error(const struct vantaq_config_loader *l
 
 const struct vantaq_runtime_config *
 vantaq_config_loader_config(const struct vantaq_config_loader *loader) {
+    struct vantaq_config_loader *mutable_loader;
+    struct vantaq_runtime_config *cfg;
+
     if (loader == NULL) {
         return NULL;
     }
-    return &loader->config;
+
+    mutable_loader = (struct vantaq_config_loader *)loader;
+    cfg            = atomic_load_explicit(&mutable_loader->active_config, memory_order_acquire);
+    if (cfg != NULL) {
+        atomic_fetch_add_explicit(&cfg->ref_count, 1, memory_order_relaxed);
+    }
+    return cfg;
 }
 
 const char *vantaq_runtime_service_listen_host(const struct vantaq_runtime_config *config) {

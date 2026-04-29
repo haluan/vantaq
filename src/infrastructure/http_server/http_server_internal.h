@@ -77,4 +77,8 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                                 const struct vantaq_http_request_context *req_ctx,
                                 const char *request_body);
 
+int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
+                                      const struct vantaq_http_health_context *ctx,
+                                      const struct vantaq_http_request_context *req_ctx);
+
 #endif

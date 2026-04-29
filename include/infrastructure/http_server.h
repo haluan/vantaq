@@ -65,7 +65,11 @@ struct vantaq_http_server_options {
 
 /*
  * Runs the HTTP server loop in single-threaded mode. Each client connection is
- * handled synchronously before the next accept() iteration.
+ * handled synchronously to completion before the next accept() iteration.
+ *
+ * This design provides strict resource isolation and predictable stack usage
+ * for embedded environments, but means one slow client can block the server.
+ * Intended for low-concurrency, trusted-network administrative interfaces.
  */
 enum vantaq_http_server_status vantaq_http_server_run(const struct vantaq_http_server_options *options);
 const char *vantaq_http_server_status_text(enum vantaq_http_server_status status);
