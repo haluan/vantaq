@@ -1,22 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-// clang-format off
-#include <stdarg.h>
-#include <stddef.h>
-#include <setjmp.h>
-#include <stdint.h>
-#include <cmocka.h>
-// clang-format on
+#include "infrastructure/crypto/evidence_signer.h"
+
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include "infrastructure/crypto/evidence_signer.h"
+#include <cmocka.h>
 
 // Valid EC P-256 Key Pair for Testing
 static const char *TEST_PRIV_KEY =

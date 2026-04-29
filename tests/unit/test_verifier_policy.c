@@ -1,17 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-// clang-format off
+#include "domain/verifier_access/verifier_policy.h"
+
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <setjmp.h>
 #include <stdint.h>
-#include <cmocka.h>
-// clang-format on
 #include <stdlib.h>
 #include <string.h>
 
-#include "domain/verifier_access/verifier_policy.h"
+#include <cmocka.h>
 
 // Suite Pattern: Struct to hold test state
 struct VerifierPolicyTestSuite {

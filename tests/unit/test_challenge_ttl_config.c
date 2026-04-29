@@ -3,15 +3,14 @@
 
 #include "infrastructure/config_loader.h"
 
-// clang-format off
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <cmocka.h>
-// clang-format on
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+#include <cmocka.h>
 
 #define YAML_MINIMAL                                                                               \
     "server:\n"                                                                                    \

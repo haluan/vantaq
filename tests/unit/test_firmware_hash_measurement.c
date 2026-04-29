@@ -1,22 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-// clang-format off
+#include "domain/measurement/measurement.h"
+#include "infrastructure/config_loader.h"
+#include "infrastructure/linux_measurement/firmware_hash.h"
+#include "infrastructure/memory/zero_struct.h"
+
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <setjmp.h>
-#include <cmocka.h>
-// clang-format on
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include "domain/measurement/measurement.h"
-#include "infrastructure/config_loader.h"
-#include "infrastructure/linux_measurement/firmware_hash.h"
-#include "infrastructure/memory/zero_struct.h"
+#include <cmocka.h>
 
 struct FirmwareHashMeasurementTestSuite {
     char firmware_path[256];

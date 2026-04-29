@@ -1,18 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-// clang-format off
-#include <stdarg.h>
-#include <stddef.h>
+#include "infrastructure/crypto/nonce_random.h"
+
 #include <setjmp.h>
-#include <stdint.h>
-#include <cmocka.h>
-// clang-format on
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "infrastructure/crypto/nonce_random.h"
+#include <cmocka.h>
 
 // Suite Pattern: Struct to hold test state
 struct NonceRandomTestSuite {

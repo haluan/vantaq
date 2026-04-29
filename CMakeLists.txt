@@ -129,39 +129,37 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_challenge_ttl_config PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_challenge_ttl_config COMMAND test_challenge_ttl_config)
 
-  add_executable(test_cli_smoke tests/integration/test_cli_smoke.c)
+  set(VANTAQ_TEST_SERVER_HARNESS_SRC tests/integration/test_server_harness.c)
+
+  add_executable(test_cli_smoke tests/integration/test_cli_smoke.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_cli_smoke PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_cli_smoke COMMAND test_cli_smoke)
   set_tests_properties(integration_cli_smoke PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
-  add_executable(test_capabilities_mtls tests/integration/test_capabilities_mtls.c tests/integration/test_cli_smoke.c)
-  target_compile_definitions(test_capabilities_mtls PRIVATE DISABLE_TEST_MAIN)
+  add_executable(test_capabilities_mtls tests/integration/test_capabilities_mtls.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_capabilities_mtls PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_capabilities_mtls COMMAND test_capabilities_mtls)
   set_tests_properties(integration_capabilities_mtls PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
-  add_executable(test_valid_evidence_request tests/integration/test_valid_evidence_request.c tests/integration/test_cli_smoke.c)
-  target_compile_definitions(test_valid_evidence_request PRIVATE DISABLE_TEST_MAIN)
+  add_executable(test_valid_evidence_request tests/integration/test_valid_evidence_request.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_valid_evidence_request PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_valid_evidence_request COMMAND test_valid_evidence_request)
   set_tests_properties(integration_valid_evidence_request PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
-  add_executable(test_replayed_challenge tests/integration/test_replayed_challenge.c tests/integration/test_cli_smoke.c)
-  target_compile_definitions(test_replayed_challenge PRIVATE DISABLE_TEST_MAIN)
+  add_executable(test_replayed_challenge tests/integration/test_replayed_challenge.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_replayed_challenge PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_replayed_challenge COMMAND test_replayed_challenge)
   set_tests_properties(integration_replayed_challenge PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
-  add_executable(test_malformed_evidence_request tests/integration/test_malformed_evidence_request.c tests/integration/test_cli_smoke.c)
-  target_compile_definitions(test_malformed_evidence_request PRIVATE DISABLE_TEST_MAIN)
+  add_executable(test_malformed_evidence_request tests/integration/test_malformed_evidence_request.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
   target_link_libraries(test_malformed_evidence_request PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_malformed_evidence_request COMMAND test_malformed_evidence_request)
   set_tests_properties(integration_malformed_evidence_request PROPERTIES

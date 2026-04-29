@@ -1,20 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Haluan Irsad
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
 
-// clang-format off
-#include <stdarg.h>
-#include <stddef.h>
-#include <setjmp.h>
-#include <stdint.h>
-#include <cmocka.h>
-// clang-format on
+#include "infrastructure/tls/client_cert.h"
+#include "infrastructure/tls_server.h"
+
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
-#include "infrastructure/tls/client_cert.h"
-#include "infrastructure/tls_server.h"
+#include <cmocka.h>
 
 // Suite Pattern: Struct to hold test state
 struct ClientCertTestSuite {
