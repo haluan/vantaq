@@ -6,6 +6,7 @@
 #include "infrastructure/http_server.h"
 #include "application/security/verifier_context.h"
 #include "application/security/verifier_lookup.h"
+#include "domain/evidence/evidence.h"
 #include "domain/verifier_access/verifier_policy.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
@@ -624,6 +625,16 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         return 405;
     }
 
+    if (strncmp(path, "/v1/attestation/evidence/", 25) == 0) {
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
+    }
+
     return 404;
 }
 
@@ -898,6 +909,18 @@ static void handle_client(struct vantaq_http_connection *connection,
         } else if (status_code == 200 && (strcmp(path, "/v1/attestation/latest-evidence") == 0 ||
                                           strcmp(path, "/v1/attestation/evidence/latest") == 0)) {
             rc = send_get_latest_evidence_response(connection, health_ctx, &request_ctx);
+        } else if (status_code == 200 && strncmp(path, "/v1/attestation/evidence/", 25) == 0) {
+            const char *evidence_id = path + 25;
+            size_t id_len           = strnlen(evidence_id, VANTAQ_EVIDENCE_ID_MAX);
+
+            if (evidence_id[0] == '\0' || id_len == 0U || id_len >= VANTAQ_EVIDENCE_ID_MAX ||
+                strchr(evidence_id, '/') != NULL || strchr(evidence_id, '%') != NULL ||
+                strstr(evidence_id, "..") != NULL) {
+                rc = vantaq_http_send_status_response(connection, 400);
+            } else {
+                rc = send_get_evidence_by_id_response(connection, health_ctx, &request_ctx,
+                                                      evidence_id);
+            }
         } else {
             rc = send_health_response(connection, health_ctx);
         }

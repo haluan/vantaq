@@ -3,6 +3,7 @@
 
 #include "application/attestation_challenge/create_challenge.h"
 #include "application/evidence/create_evidence.h"
+#include "application/evidence/get_evidence_by_id.h"
 #include "application/evidence/get_latest_evidence.h"
 #include "application/evidence/latest_evidence_store.h"
 #include "domain/ring_buffer/ring_buffer.h"
@@ -591,6 +592,57 @@ int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
         free(evidence_json);
         return -1;
     }
+    free(evidence_json);
+    return 0;
+}
+
+int send_get_evidence_by_id_response(struct vantaq_http_connection *connection,
+                                     const struct vantaq_http_health_context *ctx,
+                                     const struct vantaq_http_request_context *req_ctx,
+                                     const char *evidence_id) {
+    enum vantaq_app_get_evidence_by_id_status status;
+    char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
+    char *evidence_json = NULL;
+    int response_n;
+
+    if (connection == NULL || ctx == NULL || req_ctx == NULL || evidence_id == NULL) {
+        return -1;
+    }
+
+    if (ctx->evidence_ring_buffer == NULL) {
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+    }
+
+    status = vantaq_app_get_evidence_by_id(
+        ctx->evidence_ring_buffer, req_ctx->verifier_auth.identity.id, evidence_id, &evidence_json);
+    if (status == VANTAQ_APP_GET_EVIDENCE_BY_ID_NOT_FOUND) {
+        return vantaq_http_send_status_response(connection, 404);
+    }
+    if (status == VANTAQ_APP_GET_EVIDENCE_BY_ID_INVALID_ARGUMENT) {
+        return vantaq_http_send_status_response(connection, 400);
+    }
+    if (status != VANTAQ_APP_GET_EVIDENCE_BY_ID_OK || evidence_json == NULL) {
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+    }
+
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          strlen(evidence_json), evidence_json);
+    if (response_n < 0 || (size_t)response_n >= sizeof(response)) {
+        free(evidence_json);
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+    }
+
+    if (vantaq_http_write_all(connection, response, (size_t)response_n) != 0) {
+        free(evidence_json);
+        return -1;
+    }
+
     free(evidence_json);
     return 0;
 }

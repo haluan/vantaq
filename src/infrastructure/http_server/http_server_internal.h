@@ -81,5 +81,9 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
 int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
                                       const struct vantaq_http_health_context *ctx,
                                       const struct vantaq_http_request_context *req_ctx);
+int send_get_evidence_by_id_response(struct vantaq_http_connection *connection,
+                                     const struct vantaq_http_health_context *ctx,
+                                     const struct vantaq_http_request_context *req_ctx,
+                                     const char *evidence_id);
 
 #endif
