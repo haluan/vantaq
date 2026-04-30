@@ -42,9 +42,21 @@ docker compose up --build -d device-1
 2. Verify endpoints from verifier container:
 
 ```bash
-docker compose run --rm verifier-cli http://device-1:8080/v1/health
-docker compose run --rm verifier-cli http://device-1:8080/v1/device/identity
-docker compose run --rm verifier-cli http://device-1:8080/v1/device/capabilities
+docker compose run --rm allowed-verifier \
+  --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/health
+docker compose run --rm allowed-verifier \
+  --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/device/identity
+docker compose run --rm allowed-verifier \
+  --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/device/capabilities
 ```
 
 3. Stop environment:
@@ -136,7 +148,12 @@ docker compose up -d device-1
 2. Run curl from the `allowed-verifier` container:
 
 ```bash
-docker compose run --rm allowed-verifier http://10.50.10.10:8080/v1/health
+docker compose run --rm allowed-verifier \
+  -sS -i \
+  --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/health
 ```
 
 3. Expected result:
@@ -172,7 +189,12 @@ docker compose up -d device-1
 2. Run curl from the `rogue-verifier` container:
 
 ```bash
-docker compose run --rm rogue-verifier http://10.60.10.10:8080/v1/health
+docker compose run --rm rogue-verifier \
+  -sS -i \
+  --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/health
 ```
 
 3. Expected result:
@@ -189,6 +211,14 @@ This suite validates mTLS enforcement, verifier allowlisting, and Metadata API a
 
 ```bash
 make test-mtls
+```
+
+2. Optional smoke targets from `Makefile`:
+
+```bash
+make integration-test-mtls
+make integration-test-mtls-identity
+make integration-test-mtls-capabilities
 ```
 
 #### Manual Execution via Docker Compose
@@ -220,7 +250,7 @@ docker compose -f tests/integration/mtls/docker-compose.yml down
 rm -rf tests/integration/mtls/certs
 ```
 
-2. Behavior:
+5. Behavior:
    - Automatically generates test PKI certificates.
    - Spins up `vantaqd` and a `test-runner` in Docker.
    - Validates:
@@ -271,12 +301,12 @@ curl --cacert ca.crt --cert verifier.crt --key verifier.key \
 
 ```bash
 docker compose run --rm allowed-verifier \
-  curl -s --cacert /certs/device-ca.crt \
-       --cert /certs/govt-verifier-01.crt \
-       --key /certs/govt-verifier-01.key \
-       -X POST -H "Content-Type: application/json" \
-       -d '{"purpose": "remote_attestation"}' \
-       https://device-1:8443/v1/attestation/challenge
+  -sS --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"purpose": "remote_attestation"}' \
+  https://device-1:8443/v1/attestation/challenge
 ```
 
 **Configuration (`vantaqd.yaml`)**:
@@ -290,3 +320,166 @@ challenge:
 
 **Audit Logs**:
 Challenge creation attempts (success and failure) are logged to the audit log with `verifier_id` and `request_id` correlation.
+
+### Attestation Evidence API
+
+Create signed attestation evidence bound to a previously issued challenge.
+
+**Endpoint**: `POST /v1/attestation/evidence`
+
+**Authorization**:
+- Requires a valid mTLS certificate from an allowlisted verifier.
+- The verifier must have permission to call `POST /v1/attestation/evidence` (or have `*` permissions).
+- The challenge must belong to the authenticated verifier and be valid at request time.
+
+**Request Body**:
+- `challenge_id` (required): Challenge ID returned by `POST /v1/attestation/challenge`.
+- `nonce` (required): Nonce returned with the challenge.
+- `claims` (required): Non-empty string array of requested claims.
+
+Supported claim names:
+- `device_identity`
+- `firmware_hash`
+- `config_hash`
+- `agent_integrity`
+- `boot_state`
+
+Notes:
+- Claim names are validated against supported claim names and `capabilities.supported_claims` in `vantaqd.yaml`.
+- Measurement-backed claims (`firmware_hash`, `config_hash`, `agent_integrity`, `boot_state`) require valid `measurement` paths in `vantaqd.yaml`.
+
+**Example Request (using curl with mTLS)**:
+
+```bash
+curl --cacert ca.crt --cert verifier.crt --key verifier.key \
+     -X POST -H "Content-Type: application/json" \
+     -d '{"challenge_id":"<challenge-id>","nonce":"<nonce>","claims":["device_identity","firmware_hash"]}' \
+     https://localhost:8443/v1/attestation/evidence
+```
+
+**Example via Docker Compose**:
+
+```bash
+docker compose run --rm allowed-verifier \
+  -sS --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"challenge_id":"<challenge-id>","nonce":"<nonce>","claims":["device_identity"]}' \
+  https://device-1:8443/v1/attestation/evidence
+```
+
+**Response Fields**:
+Successful responses include:
+- `evidence_id`
+- `device_id`
+- `verifier_id`
+- `challenge_id`
+- `nonce`
+- `purpose`
+- `timestamp`
+- `claims`
+- `signature_algorithm`
+- `signature`
+
+**Common `error.code` Values**:
+- `challenge_not_found` (404)
+- `challenge_expired` (409)
+- `challenge_already_used` (409)
+- `nonce_mismatch` (409)
+- `verifier_mismatch` (403)
+- `invalid_claims` (400)
+- `unsupported_claim` (400)
+- `claim_not_allowed` (403)
+- `measurement_source_not_found` (404)
+- `measurement_parse_failed` (400)
+
+**Audit Logs**:
+Evidence creation attempts (success and failure) are written to the audit log with `verifier_id` and `request_id` correlation.
+
+### Latest Evidence API
+
+Retrieve the latest evidence previously generated for the authenticated verifier.
+
+**Endpoint**: `GET /v1/attestation/evidence/latest`
+
+Compatibility note: `GET /v1/attestation/latest-evidence` is also accepted.
+
+**Authorization**:
+- Requires a valid mTLS certificate from an allowlisted verifier.
+- The verifier must have permission to call `GET /v1/attestation/latest-evidence` (or have `*` permissions).
+- Responses are scoped to the authenticated verifier identity.
+
+**Behavior**:
+- Returns the same JSON shape as `POST /v1/attestation/evidence`.
+- Returns `404` when no evidence has been stored yet for that verifier.
+
+**Example via Docker Compose**:
+
+```bash
+docker compose run --rm allowed-verifier \
+  -sS --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/attestation/evidence/latest
+```
+
+**Configuration (`vantaqd.yaml`)**:
+
+```yaml
+verifiers:
+  - verifier_id: govt-verifier-01
+    allowed_apis:
+      - POST /v1/attestation/evidence
+      - GET /v1/attestation/evidence/latest
+```
+
+### Evidence by ID API
+
+Retrieve one stored evidence document by its evidence ID for the authenticated verifier.
+
+**Endpoint**: `GET /v1/attestation/evidence/{evidence_id}`
+
+**Authorization**:
+- Requires a valid mTLS certificate from an allowlisted verifier.
+- The verifier must have permission to call `GET /v1/attestation/evidence/{evidence_id}` (or have `*` permissions).
+- Responses are scoped to the authenticated verifier identity; evidence owned by another verifier is not returned.
+
+**Path Rules**:
+- `evidence_id` must be non-empty and within the server max length.
+- Path traversal and encoded traversal patterns are rejected (`/`, `%`, `..` in the path segment).
+
+**Behavior**:
+- Returns `200` with the same evidence JSON shape as `POST /v1/attestation/evidence` when found.
+- Returns `404` when the evidence ID does not exist for that verifier.
+- Returns `400` for invalid `evidence_id` path format.
+
+**Example via Docker Compose**:
+
+```bash
+docker compose run --rm allowed-verifier \
+  -sS --cacert /certs/device-ca.crt \
+  --cert /certs/govt-verifier-01.crt \
+  --key /certs/govt-verifier-01.key \
+  https://device-1:8443/v1/attestation/evidence/<evidence-id>
+```
+
+### Verifier CLI Signature Verification
+
+Use `bin/verify_evidence` to verify evidence signatures off-device.
+
+1. Build binaries:
+
+```bash
+make build
+```
+
+2. Verify evidence:
+
+```bash
+./bin/verify_evidence <evidence.json> <device-public-key-or-cert.pem>
+```
+
+References:
+- `tools/verifier-cli/README.md`
+- `tests/integration/test_verifier_cli_verify_evidence.sh`
