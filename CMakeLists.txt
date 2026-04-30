@@ -260,6 +260,14 @@ if(VANTAQ_BUILD_TESTS)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
+  add_executable(test_ring_buffer_overwrite tests/integration/test_ring_buffer_overwrite.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_include_directories(test_ring_buffer_overwrite PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_ring_buffer_overwrite PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_ring_buffer_overwrite COMMAND test_ring_buffer_overwrite)
+  set_tests_properties(integration_ring_buffer_overwrite PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
   add_executable(test_evidence_domain tests/unit/test_evidence_domain.c)
   target_link_libraries(test_evidence_domain PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_evidence_domain COMMAND test_evidence_domain)
