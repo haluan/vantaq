@@ -259,7 +259,9 @@ static void test_agent_integrity_not_requested_omitted(void **state) {
         request_challenge(s->server.port, challenge_id, sizeof(challenge_id), nonce, sizeof(nonce)),
         0);
 
-    snprintf(req, sizeof(req), "{\"challenge_id\":\"%s\",\"nonce\":\"%s\"}", challenge_id, nonce);
+    snprintf(req, sizeof(req),
+             "{\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"claims\":[\"device_identity\"]}",
+             challenge_id, nonce);
     s_assert_int_equal(s,
                        curl_mtls_post_status_body(s->server.port, "/v1/attestation/evidence", req,
                                                   &status, body, sizeof(body)),

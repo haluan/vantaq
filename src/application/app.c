@@ -4,7 +4,9 @@
 #include "application/app.h"
 
 #include "application/evidence/latest_evidence_store.h"
+#include "domain/ring_buffer/ring_buffer.h"
 #include "domain/version.h"
+#include "evidence_ring_buffer.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/config_loader.h"
 #include "infrastructure/crypto/device_key_loader.h"
@@ -48,6 +50,8 @@ struct vantaq_app_context {
     struct vantaq_config_loader *loader;
     struct vantaq_challenge_store *store;
     struct vantaq_latest_evidence_store *latest_store;
+    struct vantaq_ring_buffer_config *ring_config;
+    struct vantaq_evidence_ring_buffer *ring_buffer;
     vantaq_device_key_t *device_key;
     const char *config_path;
     bool config_path_set;
@@ -473,8 +477,28 @@ int vantaq_app_run(int argc, char **argv, const struct vantaq_app_io *io) {
             goto cleanup;
         }
 
+        if (vantaq_ring_buffer_config_create(vantaq_runtime_evidence_store_file_path(config),
+                                             vantaq_runtime_evidence_store_max_records(config),
+                                             vantaq_runtime_evidence_store_max_record_bytes(config),
+                                             vantaq_runtime_evidence_store_fsync_on_append(config),
+                                             &ctx.ring_config) != RING_BUFFER_OK) {
+            (void)vantaq_write(io->write_err, io->ctx,
+                               "startup failed: invalid evidence ring buffer config\n");
+            ctx.exit_code = 78;
+            goto cleanup;
+        }
+
+        if (vantaq_evidence_ring_buffer_open(ctx.ring_config, &ctx.ring_buffer) !=
+            VANTAQ_EVIDENCE_RING_OPEN_OK) {
+            (void)vantaq_write(io->write_err, io->ctx,
+                               "startup failed: failed to open evidence ring buffer\n");
+            ctx.exit_code = 70;
+            goto cleanup;
+        }
+
         server_options.challenge_store       = ctx.store;
         server_options.latest_evidence_store = ctx.latest_store;
+        server_options.evidence_ring_buffer  = ctx.ring_buffer;
         server_options.device_key            = ctx.device_key;
         server_options.challenge_ttl_seconds = vantaq_runtime_challenge_ttl_seconds(config);
         server_options.write_out             = io->write_out;
@@ -508,6 +532,12 @@ cleanup:
     }
     if (ctx.latest_store != NULL) {
         vantaq_latest_evidence_store_destroy(ctx.latest_store);
+    }
+    if (ctx.ring_buffer != NULL) {
+        vantaq_evidence_ring_buffer_destroy(ctx.ring_buffer);
+    }
+    if (ctx.ring_config != NULL) {
+        vantaq_ring_buffer_config_destroy(ctx.ring_config);
     }
     if (ctx.device_key != NULL) {
         vantaq_device_key_destroy(ctx.device_key);

@@ -48,7 +48,10 @@ set(VANTAQ_COMMON_SOURCES
 )
 
 add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
-target_include_directories(vantaq_core PUBLIC include)
+target_include_directories(vantaq_core
+  PUBLIC include
+  PRIVATE src/infrastructure/ring_buffer_file
+)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 target_link_libraries(vantaq_core PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
@@ -227,6 +230,14 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_malformed_evidence_request PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_malformed_evidence_request COMMAND test_malformed_evidence_request)
   set_tests_properties(integration_malformed_evidence_request PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
+  add_executable(test_evidence_stored_after_creation tests/integration/test_evidence_stored_after_creation.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_include_directories(test_evidence_stored_after_creation PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_evidence_stored_after_creation PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_evidence_stored_after_creation COMMAND test_evidence_stored_after_creation)
+  set_tests_properties(integration_evidence_stored_after_creation PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 

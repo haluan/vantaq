@@ -54,13 +54,14 @@ static bool constant_time_bounded_cstring_equal(const char *lhs, const char *rhs
 static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
                                          size_t secure_boot_size, char *boot_mode,
                                          size_t boot_mode_size) {
-    bool ok          = false;
-    bool has_secure  = false;
-    bool has_mode    = false;
-    char *copy       = NULL;
-    char *token_ctx  = NULL;
-    char *token      = NULL;
-    char *equal_sign = NULL;
+    bool ok           = false;
+    bool has_secure   = false;
+    bool has_mode     = false;
+    bool has_rollback = false;
+    char *copy        = NULL;
+    char *token_ctx   = NULL;
+    char *token       = NULL;
+    char *equal_sign  = NULL;
     const char *key;
     const char *val;
 
@@ -104,6 +105,11 @@ static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
                 }
                 memcpy(boot_mode, val, strlen(val) + 1U);
                 has_mode = true;
+            } else if (strcmp(key, VANTAQ_BOOT_STATE_KEY_ROLLBACK_DETECTED) == 0) {
+                if (has_rollback || val[0] == '\0') {
+                    goto cleanup;
+                }
+                has_rollback = true;
             } else {
                 /* Reject unknown or malformed keys (addresses E5). */
                 goto cleanup;
@@ -561,18 +567,7 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(const struct vantaq_app_evi
         goto cleanup;
     }
 
-    // 8. Store latest evidence in memory if store provided
-    // NOTE: If this fails, the challenge is still marked used. This results in
-    // a cache desync for the /latest endpoint (addresses E1).
-    if (ctx->latest_store) {
-        if (vantaq_latest_evidence_store_put(ctx->latest_store, verifier_id, evidence, sig_b64) !=
-            VANTAQ_LATEST_EVIDENCE_OK) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_INTERNAL;
-            goto cleanup;
-        }
-    }
-
-    // 9. Success
+    // 8. Success
     out_res->evidence      = evidence;
     out_res->signature_b64 = sig_b64;
     evidence               = NULL; // Transferred ownership

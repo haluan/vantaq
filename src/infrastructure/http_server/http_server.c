@@ -1017,7 +1017,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
         (options->storage_modes_count > 0 && options->storage_modes == NULL) ||
         (options->allowed_subnets_count > 0 && options->allowed_subnets == NULL) ||
         options->audit_log_path == NULL || options->audit_log_path[0] == '\0' ||
-        options->audit_log_max_bytes == 0) {
+        options->audit_log_max_bytes == 0 || options->evidence_ring_buffer == NULL) {
         return VANTAQ_HTTP_SERVER_STATUS_INVALID_ARGUMENT;
     }
     if (options->tls_enabled &&
@@ -1111,6 +1111,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     health_ctx.audit_log                  = audit_log;
     health_ctx.challenge_store            = options->challenge_store;
     health_ctx.latest_evidence_store      = options->latest_evidence_store;
+    health_ctx.evidence_ring_buffer       = options->evidence_ring_buffer;
     health_ctx.device_key                 = options->device_key;
     health_ctx.challenge_ttl_seconds      = options->challenge_ttl_seconds;
     health_ctx.err_logger                 = options->write_err;

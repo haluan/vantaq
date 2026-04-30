@@ -14,6 +14,10 @@
 #define VANTAQ_MEASUREMENT_DEFAULT_AGENT_BINARY_PATH "/usr/local/bin/vantaqd"
 #define VANTAQ_MEASUREMENT_DEFAULT_BOOT_STATE_PATH "/run/vantaqd/boot_state"
 #define VANTAQ_MEASUREMENT_DEFAULT_MAX_FILE_BYTES (16U * 1024U * 1024U)
+#define VANTAQ_EVIDENCE_STORE_DEFAULT_FILE_PATH "/var/lib/vantaqd/evidence.ring"
+#define VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORDS 1024U
+#define VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORD_BYTES 8192U
+#define VANTAQ_EVIDENCE_STORE_DEFAULT_FSYNC_ON_APPEND 1
 
 #include <stdbool.h>
 
@@ -128,5 +132,9 @@ const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime
 size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *config);
 size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config);
+const char *vantaq_runtime_evidence_store_file_path(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_evidence_store_max_records(const struct vantaq_runtime_config *config);
+size_t vantaq_runtime_evidence_store_max_record_bytes(const struct vantaq_runtime_config *config);
+bool vantaq_runtime_evidence_store_fsync_on_append(const struct vantaq_runtime_config *config);
 
 #endif

@@ -4,7 +4,6 @@
 #ifndef VANTAQ_APPLICATION_EVIDENCE_CREATE_EVIDENCE_H
 #define VANTAQ_APPLICATION_EVIDENCE_CREATE_EVIDENCE_H
 
-#include "application/evidence/latest_evidence_store.h"
 #include "domain/attestation_challenge/challenge_store.h"
 #include "domain/evidence/evidence.h"
 #include "infrastructure/crypto/device_key_loader.h"
@@ -40,7 +39,6 @@ typedef enum {
  */
 struct vantaq_app_evidence_context {
     struct vantaq_challenge_store *store;
-    struct vantaq_latest_evidence_store *latest_store;
     const struct vantaq_runtime_config *runtime_config;
     const vantaq_device_key_t *device_key;
     int64_t current_time_unix;

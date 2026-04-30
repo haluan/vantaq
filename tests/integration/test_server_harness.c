@@ -194,6 +194,24 @@ int make_temp_audit_path(char *path_out, size_t path_out_size) {
     return 0;
 }
 
+static int make_temp_ring_path(char *path_out, size_t path_out_size) {
+    char template[] = "/tmp/vantaq_evidence_ring_XXXXXX.ring";
+    int fd          = mkstemps(template, 5);
+
+    if (fd < 0) {
+        return -1;
+    }
+    close(fd);
+
+    if (strlen(template) >= path_out_size) {
+        unlink(template);
+        return -1;
+    }
+
+    strcpy(path_out, template);
+    return 0;
+}
+
 int wait_for_server_ready(int port, int timeout_ms) {
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
     int attempts          = 1;
@@ -360,6 +378,12 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     const char *measurement_security_config_path;
     const char *measurement_agent_binary_path;
     const char *measurement_boot_state_path;
+    const char *device_priv_key_path;
+    const char *device_pub_key_path;
+    const char *evidence_store_file_path;
+    const char *evidence_store_max_records;
+    const char *evidence_store_max_record_bytes;
+    const char *evidence_store_fsync_on_append;
     int fd;
     int n;
 
@@ -390,8 +414,8 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                            "  serial_number: SN-001\n"
                            "  manufacturer: ExampleCorp\n"
                            "  firmware_version: 0.1.0-demo\n"
-                           "  device_priv_key_path: config/certs/device-server.key\n"
-                           "  device_pub_key_path: config/certs/device-server.crt\n"
+                           "  device_priv_key_path: %s\n"
+                           "  device_pub_key_path: %s\n"
                            "\n"
                            "capabilities:\n"
                            "  supported_claims:\n"
@@ -412,6 +436,11 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
                            "audit:\n"
                            "  max_bytes: 1048576\n"
                            "  path: %s\n"
+                           "evidence_store:\n"
+                           "  file_path: %s\n"
+                           "  max_records: %s\n"
+                           "  max_record_bytes: %s\n"
+                           "  fsync_on_append: %s\n"
                            "%s";
 
     apis = opts->allowed_apis_yaml != NULL ? opts->allowed_apis_yaml : "      - GET /v1/health\n";
@@ -432,22 +461,40 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     measurement_boot_state_path      = opts->measurement_boot_state_path != NULL
                                            ? opts->measurement_boot_state_path
                                            : "/run/vantaqd/boot_state";
+    device_priv_key_path = opts->device_priv_key_path != NULL ? opts->device_priv_key_path
+                                                              : "config/certs/device-server.key";
+    device_pub_key_path  = opts->device_pub_key_path != NULL ? opts->device_pub_key_path
+                                                             : "config/certs/device-server.crt";
+    evidence_store_file_path = opts->evidence_store_file_path != NULL
+                                   ? opts->evidence_store_file_path
+                                   : "/tmp/vantaq_evidence_default.ring";
+    evidence_store_max_records =
+        opts->evidence_store_max_records != NULL ? opts->evidence_store_max_records : "1024";
+    evidence_store_max_record_bytes = opts->evidence_store_max_record_bytes != NULL
+                                          ? opts->evidence_store_max_record_bytes
+                                          : "8192";
+    evidence_store_fsync_on_append  = opts->evidence_store_fsync_on_append != NULL
+                                          ? opts->evidence_store_fsync_on_append
+                                          : "true";
 
     fd = mkstemps(template, 5);
     if (fd < 0) {
         return -1;
     }
 
-    n = snprintf(
-        yaml_buf, sizeof(yaml_buf), yaml_fmt, port, opts->tls_enabled ? "true" : "false", cert_path,
-        opts->tls_enabled ? "config/certs/device-server.key" : test_tls_key_path,
-        opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
-        opts->require_client_cert ? "true" : "false", apis, supported_claims_yaml,
-        measurement_firmware_path, measurement_security_config_path, measurement_agent_binary_path,
-        measurement_boot_state_path, allowed_subnets, dev_allow_all, audit_log_path,
-        opts->include_challenge
-            ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
-            : "");
+    n = snprintf(yaml_buf, sizeof(yaml_buf), yaml_fmt, port, opts->tls_enabled ? "true" : "false",
+                 cert_path,
+                 opts->tls_enabled ? "config/certs/device-server.key" : test_tls_key_path,
+                 opts->tls_enabled ? "config/certs/verifier-ca.crt" : "/etc/hosts",
+                 opts->require_client_cert ? "true" : "false", apis, device_priv_key_path,
+                 device_pub_key_path, supported_claims_yaml, measurement_firmware_path,
+                 measurement_security_config_path, measurement_agent_binary_path,
+                 measurement_boot_state_path, allowed_subnets, dev_allow_all, audit_log_path,
+                 evidence_store_file_path, evidence_store_max_records,
+                 evidence_store_max_record_bytes, evidence_store_fsync_on_append,
+                 opts->include_challenge
+                     ? "challenge:\n  ttl_seconds: 60\n  max_global: 100\n  max_per_verifier: 10\n"
+                     : "");
     if (n <= 0 || (size_t)n >= sizeof(yaml_buf)) {
         close(fd);
         unlink(template);
@@ -522,6 +569,7 @@ static int make_temp_private_key_path(char *path_out, size_t path_out_size) {
 int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
                              struct vantaq_test_server_handle *handle, char *err, size_t err_len) {
     struct vantaq_test_server_opts defaults;
+    bool has_fixed_evidence_store_path;
     int retries;
     int attempt;
 
@@ -541,6 +589,12 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     defaults.measurement_security_config_path = "/etc/vantaqd/security.conf";
     defaults.measurement_agent_binary_path    = "/usr/local/bin/vantaqd";
     defaults.measurement_boot_state_path      = "/run/vantaqd/boot_state";
+    defaults.device_priv_key_path             = "config/certs/device-server.key";
+    defaults.device_pub_key_path              = "config/certs/device-server.crt";
+    defaults.evidence_store_file_path         = NULL;
+    defaults.evidence_store_max_records       = "1024";
+    defaults.evidence_store_max_record_bytes  = "8192";
+    defaults.evidence_store_fsync_on_append   = "true";
     defaults.startup_timeout_ms               = 0;
     defaults.max_start_retries                = 1;
 
@@ -570,17 +624,46 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     if (opts->measurement_boot_state_path != NULL) {
         defaults.measurement_boot_state_path = opts->measurement_boot_state_path;
     }
+    if (opts->device_priv_key_path != NULL) {
+        defaults.device_priv_key_path = opts->device_priv_key_path;
+    }
+    if (opts->device_pub_key_path != NULL) {
+        defaults.device_pub_key_path = opts->device_pub_key_path;
+    }
+    if (opts->evidence_store_file_path != NULL) {
+        defaults.evidence_store_file_path = opts->evidence_store_file_path;
+    }
+    if (opts->evidence_store_max_records != NULL) {
+        defaults.evidence_store_max_records = opts->evidence_store_max_records;
+    }
+    if (opts->evidence_store_max_record_bytes != NULL) {
+        defaults.evidence_store_max_record_bytes = opts->evidence_store_max_record_bytes;
+    }
+    if (opts->evidence_store_fsync_on_append != NULL) {
+        defaults.evidence_store_fsync_on_append = opts->evidence_store_fsync_on_append;
+    }
     defaults.tls_enabled         = opts->tls_enabled;
     defaults.require_client_cert = opts->require_client_cert;
     defaults.include_challenge   = opts->include_challenge;
+    if (opts->startup_timeout_ms > 0) {
+        defaults.startup_timeout_ms = opts->startup_timeout_ms;
+    }
+    if (opts->max_start_retries > 0) {
+        defaults.max_start_retries = opts->max_start_retries;
+    }
+    has_fixed_evidence_store_path = defaults.evidence_store_file_path != NULL;
     VANTAQ_ZERO_STRUCT(*handle);
-    retries = 1;
+    retries = defaults.max_start_retries;
 
     for (attempt = 0; attempt < retries; attempt++) {
         int port;
         int stderr_fd;
         int status;
         char stderr_text[2048];
+
+        if (!has_fixed_evidence_store_path) {
+            defaults.evidence_store_file_path = NULL;
+        }
 
         port = reserve_ephemeral_port();
         if (port <= 0) {
@@ -592,8 +675,26 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
 
         if (make_temp_private_key_path(handle->tls_key_path, sizeof(handle->tls_key_path)) != 0 ||
             make_temp_audit_path(handle->audit_path, sizeof(handle->audit_path)) != 0 ||
-            strlen(handle->audit_path) >= VANTAQ_MAX_FIELD_LEN ||
-            write_server_config(&defaults, port, handle->tls_key_path, handle->audit_path,
+            strlen(handle->audit_path) >= VANTAQ_MAX_FIELD_LEN) {
+            if (err != NULL && err_len > 0) {
+                (void)snprintf(err, err_len, "config_invalid: failed to create temp files");
+            }
+            vantaq_test_server_stop(handle);
+            return -1;
+        }
+
+        if (defaults.evidence_store_file_path == NULL) {
+            if (make_temp_ring_path(handle->ring_path, sizeof(handle->ring_path)) != 0 ||
+                strlen(handle->ring_path) >= VANTAQ_MAX_FIELD_LEN) {
+                if (err != NULL && err_len > 0) {
+                    (void)snprintf(err, err_len, "config_invalid: failed to create temp ring path");
+                }
+                vantaq_test_server_stop(handle);
+                return -1;
+            }
+            defaults.evidence_store_file_path = handle->ring_path;
+        }
+        if (write_server_config(&defaults, port, handle->tls_key_path, handle->audit_path,
                                 handle->cfg_path, sizeof(handle->cfg_path)) != 0 ||
             make_temp_log_path(handle->stderr_path, sizeof(handle->stderr_path)) != 0) {
             if (err != NULL && err_len > 0) {
@@ -667,6 +768,9 @@ void vantaq_test_server_stop(struct vantaq_test_server_handle *handle) {
     }
     if (handle->audit_path[0] != '\0') {
         (void)unlink(handle->audit_path);
+    }
+    if (handle->ring_path[0] != '\0') {
+        (void)unlink(handle->ring_path);
     }
     if (handle->stderr_path[0] != '\0') {
         (void)unlink(handle->stderr_path);

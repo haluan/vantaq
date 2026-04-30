@@ -20,6 +20,12 @@ struct vantaq_test_server_opts {
     const char *measurement_security_config_path;
     const char *measurement_agent_binary_path;
     const char *measurement_boot_state_path;
+    const char *device_priv_key_path;
+    const char *device_pub_key_path;
+    const char *evidence_store_file_path;
+    const char *evidence_store_max_records;
+    const char *evidence_store_max_record_bytes;
+    const char *evidence_store_fsync_on_append;
     int startup_timeout_ms;
     int max_start_retries;
 };
@@ -30,6 +36,7 @@ struct vantaq_test_server_handle {
     bool running;
     char cfg_path[256];
     char audit_path[256];
+    char ring_path[256];
     char stderr_path[256];
     char tls_key_path[256];
 };

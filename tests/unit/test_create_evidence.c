@@ -28,7 +28,6 @@
 // Suite Pattern: Struct to hold test state
 struct CreateEvidenceTestSuite {
     struct vantaq_challenge_store *store;
-    struct vantaq_latest_evidence_store *latest_store;
     vantaq_device_key_t *device_key;
     struct vantaq_runtime_config runtime_config;
     int64_t current_time;
@@ -67,9 +66,8 @@ static int suite_setup(void **state) {
     if (!s)
         return -1;
 
-    s->store        = vantaq_challenge_store_memory_create(10, 5);
-    s->latest_store = vantaq_latest_evidence_store_create(5);
-    s->device_key   = NULL;
+    s->store      = vantaq_challenge_store_memory_create(10, 5);
+    s->device_key = NULL;
     vantaq_device_key_load(NULL, TEST_PRIV_KEY, TEST_PUB_KEY, &s->device_key);
     VANTAQ_ZERO_STRUCT(s->runtime_config);
     s->runtime_config.cbSize = sizeof(s->runtime_config);
@@ -92,8 +90,6 @@ static int suite_teardown(void **state) {
             vantaq_device_key_destroy(s->device_key);
         if (s->store)
             vantaq_challenge_store_destroy(s->store);
-        if (s->latest_store)
-            vantaq_latest_evidence_store_destroy(s->latest_store);
         free(s);
     }
     remove_test_keys();
@@ -118,7 +114,6 @@ static void test_create_evidence_success(void **state) {
     memset(&res, 0, sizeof(res));
 
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time};
@@ -147,7 +142,6 @@ static void test_create_evidence_challenge_not_found(void **state) {
     memset(&res, 0, sizeof(res));
 
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time};
@@ -173,7 +167,6 @@ static void test_create_evidence_nonce_mismatch(void **state) {
     memset(&res, 0, sizeof(res));
 
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time};
@@ -202,7 +195,6 @@ static void test_create_evidence_challenge_expired(void **state) {
 
     // Request 10 seconds later
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time + 10};
@@ -230,7 +222,6 @@ static void test_create_evidence_verifier_mismatch(void **state) {
 
     // Request from verifier-2 instead of verifier-1
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time};
@@ -259,7 +250,6 @@ static void test_create_evidence_used_challenge(void **state) {
 
     // First use should succeed
     struct vantaq_app_evidence_context app_ctx = {.store             = s->store,
-                                                  .latest_store      = s->latest_store,
                                                   .runtime_config    = &s->runtime_config,
                                                   .device_key        = s->device_key,
                                                   .current_time_unix = s->current_time};
@@ -272,7 +262,6 @@ static void test_create_evidence_used_challenge(void **state) {
     memset(&res, 0, sizeof(res));
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};
@@ -299,7 +288,6 @@ static void test_create_evidence_unsupported_claim(void **state) {
 
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};
@@ -325,7 +313,6 @@ static void test_create_evidence_empty_claims_rejected(void **state) {
 
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};
@@ -353,7 +340,6 @@ static void test_create_evidence_claim_not_allowed(void **state) {
 
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};
@@ -381,7 +367,6 @@ static void test_create_evidence_duplicate_claims_invalid(void **state) {
 
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};
@@ -410,7 +395,6 @@ static void test_create_evidence_firmware_source_not_found(void **state) {
 
     {
         struct vantaq_app_evidence_context app_ctx_local = {.store             = s->store,
-                                                            .latest_store      = s->latest_store,
                                                             .runtime_config    = &s->runtime_config,
                                                             .device_key        = s->device_key,
                                                             .current_time_unix = s->current_time};

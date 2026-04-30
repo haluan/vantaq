@@ -139,7 +139,8 @@ static void test_replayed_challenge_rejected(void **state) {
 
     // 2. First Evidence Request (Success)
     char evidence_req[512];
-    snprintf(evidence_req, sizeof(evidence_req), "{\"challenge_id\":\"%s\",\"nonce\":\"%s\"}",
+    snprintf(evidence_req, sizeof(evidence_req),
+             "{\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"claims\":[\"device_identity\"]}",
              challenge_id, nonce);
 
     rc = curl_mtls_post(s->server.port, "/v1/attestation/evidence", evidence_req, body,

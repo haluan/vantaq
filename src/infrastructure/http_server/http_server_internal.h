@@ -39,6 +39,7 @@ struct vantaq_http_health_context {
     struct vantaq_audit_log *audit_log;
     struct vantaq_challenge_store *challenge_store;
     struct vantaq_latest_evidence_store *latest_evidence_store;
+    struct vantaq_evidence_ring_buffer *evidence_ring_buffer;
     const vantaq_device_key_t *device_key;
     size_t challenge_ttl_seconds;
     struct timespec started_at;

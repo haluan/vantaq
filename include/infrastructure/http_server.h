@@ -10,6 +10,7 @@
 typedef int (*vantaq_http_log_fn)(void *ctx, const char *text);
 typedef struct vantaq_device_key_t vantaq_device_key_t;
 struct vantaq_latest_evidence_store;
+struct vantaq_evidence_ring_buffer;
 
 enum vantaq_http_server_status {
     VANTAQ_HTTP_SERVER_STATUS_OK = 0,
@@ -56,6 +57,7 @@ struct vantaq_http_server_options {
     bool tls_require_client_cert;
     struct vantaq_challenge_store *challenge_store;
     struct vantaq_latest_evidence_store *latest_evidence_store;
+    struct vantaq_evidence_ring_buffer *evidence_ring_buffer;
     const vantaq_device_key_t *device_key;
     size_t challenge_ttl_seconds;
     vantaq_http_log_fn write_out;

@@ -37,6 +37,7 @@ enum vantaq_section {
     VANTAQ_SECTION_AUDIT,
     VANTAQ_SECTION_VERIFIERS,
     VANTAQ_SECTION_CHALLENGE,
+    VANTAQ_SECTION_EVIDENCE_STORE,
 };
 
 struct vantaq_retired_config {
@@ -1424,6 +1425,10 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
                 section = VANTAQ_SECTION_CHALLENGE;
                 continue;
             }
+            if (strcmp(key, "evidence_store") == 0) {
+                section = VANTAQ_SECTION_EVIDENCE_STORE;
+                continue;
+            }
 
             loader_set_error(loader, "unknown top-level key %s", key);
             CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
@@ -1768,6 +1773,48 @@ static enum vantaq_config_status parse_config_file(struct vantaq_config_loader *
             }
 
             loader_set_error(loader, "unknown challenge field %s", key);
+            CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+        }
+
+        if (section == VANTAQ_SECTION_EVIDENCE_STORE) {
+            if (strcmp(key, "file_path") == 0) {
+                rc = copy_string_to_field(
+                    loader, "evidence_store.file_path", value, tmp->evidence_store_file_path,
+                    sizeof(tmp->evidence_store_file_path), &tmp->has_evidence_store_file_path);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    CONFIG_PARSE_RETURN(rc);
+                }
+                continue;
+            }
+            if (strcmp(key, "max_records") == 0) {
+                rc = parse_size_t(loader, "evidence_store.max_records", value,
+                                  &tmp->evidence_store_max_records,
+                                  &tmp->has_evidence_store_max_records);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    CONFIG_PARSE_RETURN(rc);
+                }
+                continue;
+            }
+            if (strcmp(key, "max_record_bytes") == 0) {
+                rc = parse_size_t(loader, "evidence_store.max_record_bytes", value,
+                                  &tmp->evidence_store_max_record_bytes,
+                                  &tmp->has_evidence_store_max_record_bytes);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    CONFIG_PARSE_RETURN(rc);
+                }
+                continue;
+            }
+            if (strcmp(key, "fsync_on_append") == 0) {
+                rc = parse_bool(loader, "evidence_store.fsync_on_append", value,
+                                &tmp->evidence_store_fsync_on_append,
+                                &tmp->has_evidence_store_fsync_on_append);
+                if (rc != VANTAQ_CONFIG_STATUS_OK) {
+                    CONFIG_PARSE_RETURN(rc);
+                }
+                continue;
+            }
+
+            loader_set_error(loader, "unknown evidence_store field %s", key);
             CONFIG_PARSE_RETURN(VANTAQ_CONFIG_STATUS_PARSE_ERROR);
         }
 
@@ -2295,4 +2342,48 @@ size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *c
 size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config) {
     return (config && config->has_challenge_max_per_verifier) ? config->challenge_max_per_verifier
                                                               : 100;
+}
+
+const char *vantaq_runtime_evidence_store_file_path(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, evidence_store_file_path) +
+                             sizeof(config->evidence_store_file_path) ||
+        !config->has_evidence_store_file_path) {
+        return VANTAQ_EVIDENCE_STORE_DEFAULT_FILE_PATH;
+    }
+
+    return config->evidence_store_file_path;
+}
+
+size_t vantaq_runtime_evidence_store_max_records(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, evidence_store_max_records) +
+                             sizeof(config->evidence_store_max_records) ||
+        !config->has_evidence_store_max_records) {
+        return VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORDS;
+    }
+
+    return config->evidence_store_max_records;
+}
+
+size_t vantaq_runtime_evidence_store_max_record_bytes(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, evidence_store_max_record_bytes) +
+                             sizeof(config->evidence_store_max_record_bytes) ||
+        !config->has_evidence_store_max_record_bytes) {
+        return VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORD_BYTES;
+    }
+
+    return config->evidence_store_max_record_bytes;
+}
+
+bool vantaq_runtime_evidence_store_fsync_on_append(const struct vantaq_runtime_config *config) {
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, evidence_store_fsync_on_append) +
+                             sizeof(config->evidence_store_fsync_on_append) ||
+        !config->has_evidence_store_fsync_on_append) {
+        return VANTAQ_EVIDENCE_STORE_DEFAULT_FSYNC_ON_APPEND != 0;
+    }
+
+    return config->evidence_store_fsync_on_append;
 }

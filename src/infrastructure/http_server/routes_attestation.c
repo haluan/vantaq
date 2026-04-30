@@ -3,6 +3,9 @@
 
 #include "application/attestation_challenge/create_challenge.h"
 #include "application/evidence/create_evidence.h"
+#include "application/evidence/latest_evidence_store.h"
+#include "domain/ring_buffer/ring_buffer.h"
+#include "evidence_ring_buffer.h"
 #include "http_server_internal.h"
 #include "infrastructure/audit_log.h"
 #include "infrastructure/memory/zero_struct.h"
@@ -333,7 +336,6 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
     struct vantaq_app_evidence_context app_ctx;
     VANTAQ_ZERO_STRUCT(app_ctx);
     app_ctx.store             = ctx->challenge_store;
-    app_ctx.latest_store      = ctx->latest_evidence_store;
     app_ctx.runtime_config    = ctx->runtime_config;
     app_ctx.device_key        = ctx->device_key;
     app_ctx.current_time_unix = (int64_t)time(NULL);
@@ -453,6 +455,68 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                          esc_sig_alg, esc_sig);
 
         if (n < 0 || (size_t)n >= sizeof(json)) {
+            result =
+                send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+            goto cleanup;
+        }
+
+        if (ctx->evidence_ring_buffer == NULL) {
+            result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
+                                              req_ctx->request_id);
+            goto cleanup;
+        }
+
+        {
+            struct vantaq_ring_buffer_config *ring_cfg             = NULL;
+            struct vantaq_ring_buffer_record *ring_record          = NULL;
+            struct vantaq_ring_buffer_append_result *append_result = NULL;
+            ring_buffer_err_t rb_err;
+            enum vantaq_evidence_ring_append_status append_status;
+
+            rb_err = vantaq_ring_buffer_config_create(
+                vantaq_evidence_ring_buffer_path(ctx->evidence_ring_buffer),
+                vantaq_evidence_ring_buffer_max_records(ctx->evidence_ring_buffer),
+                vantaq_evidence_ring_buffer_max_record_bytes(ctx->evidence_ring_buffer), true,
+                &ring_cfg);
+            if (rb_err != RING_BUFFER_OK) {
+                result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
+                                                  req_ctx->request_id);
+                goto cleanup;
+            }
+
+            rb_err = vantaq_ring_buffer_record_create(
+                ring_cfg, 0U, 0U, vantaq_evidence_get_evidence_id(res.evidence),
+                vantaq_evidence_get_verifier_id(res.evidence),
+                vantaq_evidence_get_issued_at_unix(res.evidence), json, "sha256:pending", "pending",
+                &ring_record);
+            if (rb_err != RING_BUFFER_OK) {
+                vantaq_ring_buffer_config_destroy(ring_cfg);
+                result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
+                                                  req_ctx->request_id);
+                goto cleanup;
+            }
+
+            append_status = vantaq_evidence_ring_buffer_append(ctx->evidence_ring_buffer,
+                                                               ring_record, &append_result);
+            vantaq_ring_buffer_record_destroy(ring_record);
+            vantaq_ring_buffer_config_destroy(ring_cfg);
+            if (append_status != VANTAQ_EVIDENCE_RING_APPEND_OK || append_result == NULL ||
+                vantaq_ring_buffer_append_result_get_status(append_result) != RING_BUFFER_OK) {
+                if (append_result != NULL) {
+                    vantaq_ring_buffer_append_result_destroy(append_result);
+                }
+                result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
+                                                  req_ctx->request_id);
+                goto cleanup;
+            }
+
+            vantaq_ring_buffer_append_result_destroy(append_result);
+        }
+
+        if (ctx->latest_evidence_store != NULL &&
+            vantaq_latest_evidence_store_put(ctx->latest_evidence_store,
+                                             req_ctx->verifier_auth.identity.id, res.evidence,
+                                             res.signature_b64) != VANTAQ_LATEST_EVIDENCE_OK) {
             result =
                 send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
             goto cleanup;

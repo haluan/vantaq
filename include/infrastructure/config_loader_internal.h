@@ -47,6 +47,10 @@ struct vantaq_runtime_config {
     size_t challenge_ttl_seconds;
     size_t challenge_max_global;
     size_t challenge_max_per_verifier;
+    char evidence_store_file_path[VANTAQ_MAX_FIELD_LEN];
+    size_t evidence_store_max_records;
+    size_t evidence_store_max_record_bytes;
+    bool evidence_store_fsync_on_append;
 
     bool has_service_listen_host;
     bool has_service_listen_port;
@@ -81,6 +85,10 @@ struct vantaq_runtime_config {
     bool has_challenge_ttl_seconds;
     bool has_challenge_max_global;
     bool has_challenge_max_per_verifier;
+    bool has_evidence_store_file_path;
+    bool has_evidence_store_max_records;
+    bool has_evidence_store_max_record_bytes;
+    bool has_evidence_store_fsync_on_append;
 };
 
 #endif
