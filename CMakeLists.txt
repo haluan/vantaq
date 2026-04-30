@@ -33,6 +33,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/http_server/json_utils.c
   src/domain/evidence/evidence.c
   src/domain/evidence/evidence_canonical.c
+  src/domain/ring_buffer/ring_buffer.c
   src/domain/measurement/measurement.c
   src/domain/measurement/supported_claims.c
   src/infrastructure/linux_measurement/file_sha256_measurement.c
