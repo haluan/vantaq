@@ -288,6 +288,11 @@ if(VANTAQ_BUILD_TESTS)
   target_include_directories(test_ring_buffer_open_init PRIVATE src/infrastructure/ring_buffer_file)
   target_link_libraries(test_ring_buffer_open_init PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_ring_buffer_open_init COMMAND test_ring_buffer_open_init)
+
+  add_executable(test_ring_buffer_append tests/unit/test_ring_buffer_append.c)
+  target_include_directories(test_ring_buffer_append PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_ring_buffer_append PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_ring_buffer_append COMMAND test_ring_buffer_append)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

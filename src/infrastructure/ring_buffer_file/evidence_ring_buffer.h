@@ -20,11 +20,24 @@ enum vantaq_evidence_ring_open_status {
     VANTAQ_EVIDENCE_RING_OPEN_OUT_OF_MEMORY,
 };
 
+enum vantaq_evidence_ring_append_status {
+    VANTAQ_EVIDENCE_RING_APPEND_OK = 0,
+    VANTAQ_EVIDENCE_RING_APPEND_INVALID_ARGUMENT,
+    VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR,
+    VANTAQ_EVIDENCE_RING_APPEND_WRITE_FAILED,
+    VANTAQ_EVIDENCE_RING_APPEND_SYNC_FAILED,
+};
+
 enum vantaq_evidence_ring_open_status
 vantaq_evidence_ring_buffer_open(const struct vantaq_ring_buffer_config *config,
                                  struct vantaq_evidence_ring_buffer **out_buffer);
 
 void vantaq_evidence_ring_buffer_destroy(struct vantaq_evidence_ring_buffer *buffer);
+
+enum vantaq_evidence_ring_append_status
+vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
+                                   const struct vantaq_ring_buffer_record *record,
+                                   struct vantaq_ring_buffer_append_result **out_result);
 
 int vantaq_evidence_ring_buffer_fd(const struct vantaq_evidence_ring_buffer *buffer);
 const char *vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer);
