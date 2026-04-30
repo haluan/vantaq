@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -66,6 +67,22 @@ static int write_temp_yaml(const char *content, char *path_out, size_t path_out_
 
     close(fd);
     strcpy(path_out, template);
+    return 0;
+}
+
+static int make_temp_dir(char *out, size_t out_size) {
+    char templ[] = "/tmp/vantaq_app_ring_XXXXXX";
+    char *dir;
+
+    dir = mkdtemp(templ);
+    if (dir == NULL) {
+        return -1;
+    }
+    if (strlen(dir) >= out_size) {
+        return -1;
+    }
+
+    memcpy(out, dir, strlen(dir) + 1U);
     return 0;
 }
 
@@ -137,6 +154,95 @@ static void test_startup_with_valid_config_succeeds(void **state) {
     unlink(config_path);
 }
 
+static void test_startup_uses_configured_evidence_store_path(void **state) {
+    (void)state;
+    char ring_dir[256]      = {0};
+    char ring_data_dir[512] = {0};
+    char ring_path[512]     = {0};
+    char yaml[4096]         = {0};
+    char config_path[256]   = {0};
+    pid_t child;
+    int status;
+    struct stat st;
+
+    assert_int_equal(make_temp_dir(ring_dir, sizeof(ring_dir)), 0);
+    (void)snprintf(ring_data_dir, sizeof(ring_data_dir), "%s/data", ring_dir);
+    (void)snprintf(ring_path, sizeof(ring_path), "%s/data/custom-evidence.ring", ring_dir);
+
+    (void)snprintf(yaml, sizeof(yaml),
+                   "server:\n"
+                   "  listen_address: 127.0.0.1\n"
+                   "  listen_port: 8082\n"
+                   "  version: 0.1.0\n"
+                   "  tls:\n"
+                   "    enabled: false\n"
+                   "    server_cert_path: config/certs/device-server.crt\n"
+                   "    server_key_path: config/certs/device-server.key\n"
+                   "    trusted_client_ca_path: config/certs/device-server.crt\n"
+                   "    require_client_cert: true\n"
+                   "verifiers:\n"
+                   "  - verifier_id: govt-verifier-01\n"
+                   "    cert_subject_cn: govt-verifier-01\n"
+                   "    cert_san_uri: spiffe://vantaqd/verifier/govt-verifier-01\n"
+                   "    status: active\n"
+                   "    roles: [verifier]\n"
+                   "    allowed_apis: [GET /v1/health]\n"
+                   "device_identity:\n"
+                   "  device_id: edge-gw-001\n"
+                   "  model: edge-gateway-v1\n"
+                   "  serial_number: SN-001\n"
+                   "  manufacturer: ExampleCorp\n"
+                   "  firmware_version: 0.1.0-demo\n"
+                   "  device_priv_key_path: config/certs/device-server.key\n"
+                   "  device_pub_key_path: config/certs/device-server.crt\n"
+                   "capabilities:\n"
+                   "  supported_claims: [device_identity]\n"
+                   "  signature_algorithms: []\n"
+                   "  evidence_formats: []\n"
+                   "  challenge_modes: []\n"
+                   "  storage_modes: []\n"
+                   "measurement:\n"
+                   "  firmware_path: /opt/vantaqd/firmware/current.bin\n"
+                   "  security_config_path: /etc/vantaqd/security.conf\n"
+                   "  agent_binary_path: /usr/local/bin/vantaqd\n"
+                   "  boot_state_path: /run/vantaqd/boot_state\n"
+                   "  max_measurement_file_bytes: 16777216\n"
+                   "evidence_store:\n"
+                   "  file_path: %s\n"
+                   "  max_records: 8\n"
+                   "  max_record_bytes: 1024\n"
+                   "  fsync_on_append: false\n",
+                   ring_path);
+
+    assert_int_equal(write_temp_yaml(yaml, config_path, sizeof(config_path)), 0);
+
+    child = fork();
+    assert_true(child >= 0);
+    if (child == 0) {
+        (void)unsetenv("VANTAQ_AUDIT_LOG_PATH");
+        execl("./bin/vantaqd", "vantaqd", "--config", config_path, (char *)NULL);
+        _exit(127);
+    }
+
+    sleep(1);
+    if (waitpid(child, &status, WNOHANG) == 0) {
+        assert_int_equal(kill(child, 0), 0);
+        assert_int_equal(kill(child, SIGTERM), 0);
+        assert_int_equal(waitpid(child, &status, 0), child);
+        assert_true(WIFEXITED(status));
+    } else {
+        assert_true(WIFEXITED(status));
+    }
+
+    assert_int_equal(stat(ring_path, &st), 0);
+    assert_true(S_ISREG(st.st_mode));
+
+    unlink(ring_path);
+    rmdir(ring_data_dir);
+    rmdir(ring_dir);
+    unlink(config_path);
+}
+
 static void test_startup_with_invalid_config_fails(void **state) {
     (void)state;
     const char *yaml        = "server:\n"
@@ -195,6 +301,7 @@ static void test_startup_default_path_behavior_is_verified(void **state) {
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_startup_with_valid_config_succeeds),
+        cmocka_unit_test(test_startup_uses_configured_evidence_store_path),
         cmocka_unit_test(test_startup_with_invalid_config_fails),
         cmocka_unit_test(test_startup_default_path_behavior_is_verified),
     };

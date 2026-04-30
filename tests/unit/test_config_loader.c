@@ -573,6 +573,152 @@ static void test_invalid_measurement_max_file_bytes_fails(void **state) {
     remove_temp_yaml(path);
 }
 
+static void test_missing_evidence_store_uses_defaults(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID;
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+    const struct vantaq_runtime_config *config;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_OK);
+
+    config = vantaq_config_loader_config(loader);
+    assert_string_equal(vantaq_runtime_evidence_store_file_path(config),
+                        VANTAQ_EVIDENCE_STORE_DEFAULT_FILE_PATH);
+    assert_int_equal(vantaq_runtime_evidence_store_max_records(config),
+                     VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORDS);
+    assert_int_equal(vantaq_runtime_evidence_store_max_record_bytes(config),
+                     VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORD_BYTES);
+    assert_true(vantaq_runtime_evidence_store_fsync_on_append(config));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_partial_evidence_store_mixes_explicit_and_defaults(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  file_path: /tmp/custom-evidence.ring\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+    const struct vantaq_runtime_config *config;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_OK);
+
+    config = vantaq_config_loader_config(loader);
+    assert_string_equal(vantaq_runtime_evidence_store_file_path(config),
+                        "/tmp/custom-evidence.ring");
+    assert_int_equal(vantaq_runtime_evidence_store_max_records(config),
+                     VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORDS);
+    assert_int_equal(vantaq_runtime_evidence_store_max_record_bytes(config),
+                     VANTAQ_EVIDENCE_STORE_DEFAULT_MAX_RECORD_BYTES);
+    assert_true(vantaq_runtime_evidence_store_fsync_on_append(config));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_full_evidence_store_custom_config_is_applied(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  file_path: /tmp/full-evidence.ring\n"
+                                                       "  max_records: 17\n"
+                                                       "  max_record_bytes: 333\n"
+                                                       "  fsync_on_append: false\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+    const struct vantaq_runtime_config *config;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_OK);
+
+    config = vantaq_config_loader_config(loader);
+    assert_string_equal(vantaq_runtime_evidence_store_file_path(config), "/tmp/full-evidence.ring");
+    assert_int_equal(vantaq_runtime_evidence_store_max_records(config), 17U);
+    assert_int_equal(vantaq_runtime_evidence_store_max_record_bytes(config), 333U);
+    assert_false(vantaq_runtime_evidence_store_fsync_on_append(config));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_evidence_store_zero_max_records_fails_parse(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  max_records: 0\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(strstr(vantaq_config_loader_last_error(loader), "evidence_store.max_records"));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_evidence_store_zero_max_record_bytes_fails_parse(void **state) {
+    (void)state;
+    const char *yaml = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  max_record_bytes: 0\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(
+        strstr(vantaq_config_loader_last_error(loader), "evidence_store.max_record_bytes"));
+
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
+static void test_evidence_store_non_numeric_or_overflow_values_fail_parse(void **state) {
+    (void)state;
+    const char *yaml_non_numeric = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  max_record_bytes: invalid\n";
+    const char *yaml_overflow = YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID
+        YAML_CAPABILITIES_VALID YAML_MEASUREMENT_VALID "evidence_store:\n"
+                                                       "  max_records: 9999999999999999999999\n";
+    char path[256] = {0};
+    struct vantaq_config_loader *loader;
+
+    assert_int_equal(write_temp_yaml(yaml_non_numeric, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(
+        strstr(vantaq_config_loader_last_error(loader), "evidence_store.max_record_bytes"));
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+
+    assert_int_equal(write_temp_yaml(yaml_overflow, path, sizeof(path)), 0);
+    loader = vantaq_config_loader_create();
+    assert_non_null(loader);
+    assert_int_equal(vantaq_config_loader_load(loader, path), VANTAQ_CONFIG_STATUS_PARSE_ERROR);
+    assert_non_null(strstr(vantaq_config_loader_last_error(loader), "evidence_store.max_records"));
+    vantaq_config_loader_destroy(loader);
+    remove_temp_yaml(path);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_valid_yaml_loads_successfully),
@@ -592,6 +738,12 @@ int main(void) {
         cmocka_unit_test(test_tab_indentation_is_rejected),
         cmocka_unit_test(test_missing_measurement_firmware_path_fails),
         cmocka_unit_test(test_invalid_measurement_max_file_bytes_fails),
+        cmocka_unit_test(test_missing_evidence_store_uses_defaults),
+        cmocka_unit_test(test_partial_evidence_store_mixes_explicit_and_defaults),
+        cmocka_unit_test(test_full_evidence_store_custom_config_is_applied),
+        cmocka_unit_test(test_evidence_store_zero_max_records_fails_parse),
+        cmocka_unit_test(test_evidence_store_zero_max_record_bytes_fails_parse),
+        cmocka_unit_test(test_evidence_store_non_numeric_or_overflow_values_fail_parse),
     };
 
     return cmocka_run_group_tests_name("unit_config_loader", tests, NULL, NULL);
