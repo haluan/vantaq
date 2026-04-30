@@ -26,6 +26,7 @@ set(VANTAQ_COMMON_SOURCES
   src/domain/attestation_challenge/challenge.c
   src/infrastructure/crypto/nonce_random.c
   src/infrastructure/memory/challenge_store_memory.c
+  src/infrastructure/ring_buffer_file/evidence_ring_format.c
   src/application/attestation_challenge/create_challenge.c
   src/application/evidence/create_evidence.c
   src/application/evidence/latest_evidence_store.c
@@ -276,6 +277,11 @@ if(VANTAQ_BUILD_TESTS)
   target_include_directories(test_json_utils PRIVATE src/infrastructure/http_server)
   target_link_libraries(test_json_utils PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_json_utils COMMAND test_json_utils)
+
+  add_executable(test_evidence_ring_format tests/unit/test_evidence_ring_format.c)
+  target_include_directories(test_evidence_ring_format PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_evidence_ring_format PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_evidence_ring_format COMMAND test_evidence_ring_format)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

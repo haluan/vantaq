@@ -1,0 +1,78 @@
+// SPDX-FileCopyrightText: 2026 Haluan Irsad
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Commercial
+
+#ifndef VANTAQ_INFRASTRUCTURE_RING_BUFFER_FILE_EVIDENCE_RING_FORMAT_H
+#define VANTAQ_INFRASTRUCTURE_RING_BUFFER_FILE_EVIDENCE_RING_FORMAT_H
+
+#include "domain/evidence/evidence.h"
+#include "domain/ring_buffer/ring_buffer.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define VANTAQ_EVIDENCE_RING_MAGIC_SIZE 8U
+#define VANTAQ_EVIDENCE_RING_FORMAT_VERSION 1U
+
+extern const uint8_t VANTAQ_EVIDENCE_RING_MAGIC[VANTAQ_EVIDENCE_RING_MAGIC_SIZE];
+
+typedef enum {
+    VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY     = 0,
+    VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN   = 1,
+    VANTAQ_EVIDENCE_RING_RECORD_STATE_CORRUPTED = 2,
+} vantaq_evidence_ring_record_state_t;
+
+#define VANTAQ_EVIDENCE_RING_U8_SIZE 1U
+#define VANTAQ_EVIDENCE_RING_U32_SIZE 4U
+#define VANTAQ_EVIDENCE_RING_U64_SIZE 8U
+
+/* Header field offsets */
+#define VANTAQ_EVIDENCE_RING_HEADER_MAGIC_OFFSET 0U
+#define VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET                                                 \
+    (VANTAQ_EVIDENCE_RING_HEADER_MAGIC_OFFSET + VANTAQ_EVIDENCE_RING_MAGIC_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_HEADER_SIZE_OFFSET                                             \
+    (VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET                                               \
+    (VANTAQ_EVIDENCE_RING_HEADER_HEADER_SIZE_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET                                             \
+    (VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET                                        \
+    (VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET                                              \
+    (VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET                                           \
+    (VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_HEADER_SIZE                                                           \
+    (VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET + VANTAQ_EVIDENCE_RING_U64_SIZE)
+
+/* Record metadata field offsets within a slot */
+#define VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET 0U
+#define VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET                                                    \
+    (VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET + VANTAQ_EVIDENCE_RING_U8_SIZE)
+#define VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET                                                \
+    (VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET                                          \
+    (VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET + VANTAQ_EVIDENCE_RING_U64_SIZE)
+#define VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET                                       \
+    (VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET + VANTAQ_EVIDENCE_RING_U64_SIZE)
+#define VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET                                             \
+    (VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET + VANTAQ_EVIDENCE_RING_U32_SIZE)
+#define VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET                                             \
+    (VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET + VANTAQ_EVIDENCE_ID_MAX)
+#define VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET                                           \
+    (VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET + VANTAQ_VERIFIER_ID_MAX)
+#define VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET                                                \
+    (VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET + VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX)
+#define VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET                                           \
+    (VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET + VANTAQ_RING_BUFFER_CHECKSUM_MAX)
+#define VANTAQ_EVIDENCE_RING_RECORD_METADATA_SIZE VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET
+
+size_t vantaq_evidence_ring_header_size_bytes(void);
+size_t vantaq_evidence_ring_record_slot_size_bytes(size_t max_record_bytes);
+size_t vantaq_evidence_ring_slot_offset(size_t slot_index, size_t max_record_bytes);
+
+void vantaq_evidence_ring_le32_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U32_SIZE], uint32_t value);
+uint32_t vantaq_evidence_ring_le32_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U32_SIZE]);
+void vantaq_evidence_ring_le64_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U64_SIZE], uint64_t value);
+uint64_t vantaq_evidence_ring_le64_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U64_SIZE]);
+
+#endif
