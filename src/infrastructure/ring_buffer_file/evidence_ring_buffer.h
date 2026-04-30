@@ -50,6 +50,10 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
 enum vantaq_evidence_ring_read_status
 vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buffer,
                                         struct vantaq_ring_buffer_read_result **out_result);
+enum vantaq_evidence_ring_read_status
+vantaq_evidence_ring_buffer_read_by_evidence_id(struct vantaq_evidence_ring_buffer *buffer,
+                                                const char *evidence_id,
+                                                struct vantaq_ring_buffer_read_result **out_result);
 
 int vantaq_evidence_ring_buffer_fd(const struct vantaq_evidence_ring_buffer *buffer);
 const char *vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer);
