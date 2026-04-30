@@ -66,13 +66,26 @@ typedef enum {
     (VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET + VANTAQ_RING_BUFFER_CHECKSUM_MAX)
 #define VANTAQ_EVIDENCE_RING_RECORD_METADATA_SIZE VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET
 
-size_t vantaq_evidence_ring_header_size_bytes(void);
-size_t vantaq_evidence_ring_record_slot_size_bytes(size_t max_record_bytes);
-size_t vantaq_evidence_ring_slot_offset(size_t slot_index, size_t max_record_bytes);
+_Static_assert(VANTAQ_EVIDENCE_RING_HEADER_SIZE ==
+                   (VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET +
+                    VANTAQ_EVIDENCE_RING_U64_SIZE),
+               "Header size mismatch");
 
-void vantaq_evidence_ring_le32_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U32_SIZE], uint32_t value);
-uint32_t vantaq_evidence_ring_le32_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U32_SIZE]);
-void vantaq_evidence_ring_le64_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U64_SIZE], uint64_t value);
-uint64_t vantaq_evidence_ring_le64_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U64_SIZE]);
+#define vantaq_evidence_ring_header_size_bytes() ((size_t)VANTAQ_EVIDENCE_RING_HEADER_SIZE)
+
+ring_buffer_err_t vantaq_evidence_ring_record_slot_size_bytes(size_t max_record_bytes,
+                                                              size_t *out_size);
+ring_buffer_err_t vantaq_evidence_ring_slot_offset(size_t slot_index, size_t max_record_bytes,
+                                                   size_t *out_offset);
+
+bool vantaq_evidence_ring_u8_encode(uint8_t *out, uint8_t value);
+bool vantaq_evidence_ring_u8_decode(const uint8_t *in, uint8_t *out_value);
+
+bool vantaq_evidence_ring_le32_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U32_SIZE], uint32_t value);
+bool vantaq_evidence_ring_le32_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U32_SIZE],
+                                      uint32_t *out_value);
+bool vantaq_evidence_ring_le64_encode(uint8_t out[VANTAQ_EVIDENCE_RING_U64_SIZE], uint64_t value);
+bool vantaq_evidence_ring_le64_decode(const uint8_t in[VANTAQ_EVIDENCE_RING_U64_SIZE],
+                                      uint64_t *out_value);
 
 #endif

@@ -283,10 +283,16 @@ static void test_corrupted_newest_slot_is_skipped(void **state) {
     s_assert_int_equal(s, append_record(s, "ev-002", 1770010302, "{\"n\":2}"), 0);
     s_assert_int_equal(s, append_record(s, "ev-003", 1770010303, "{\"n\":3}"), 0);
 
-    vantaq_evidence_ring_le32_encode(bad_len, 9999U);
-    len_offset = (off_t)vantaq_evidence_ring_slot_offset(
-                     2U, vantaq_ring_buffer_config_get_max_record_bytes(s->config)) +
-                 (off_t)VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET;
+    s_assert_true(s, vantaq_evidence_ring_le32_encode(bad_len, 9999U));
+    {
+        size_t offset;
+        s_assert_int_equal(
+            s,
+            vantaq_evidence_ring_slot_offset(
+                2U, vantaq_ring_buffer_config_get_max_record_bytes(s->config), &offset),
+            RING_BUFFER_OK);
+        len_offset = (off_t)offset + (off_t)VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET;
+    }
     s_assert_int_equal(s, write_bytes_at(s->ring_path, len_offset, bad_len, sizeof(bad_len)), 0);
 
     s_assert_int_equal(s, vantaq_evidence_ring_buffer_read_latest(s->buffer, &result),
@@ -313,16 +319,33 @@ static void test_all_non_empty_invalid_returns_not_found(void **state) {
     s_assert_int_equal(s, append_record(s, "ev-001", 1770010401, "{\"n\":1}"), 0);
     s_assert_int_equal(s, append_record(s, "ev-002", 1770010402, "{\"n\":2}"), 0);
 
-    slot0_state_offset = (off_t)vantaq_evidence_ring_slot_offset(
-                             0U, vantaq_ring_buffer_config_get_max_record_bytes(s->config)) +
-                         (off_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET;
-    slot1_state_offset = (off_t)vantaq_evidence_ring_slot_offset(
-                             1U, vantaq_ring_buffer_config_get_max_record_bytes(s->config)) +
-                         (off_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET;
+    {
+        size_t offset0, offset1;
+        s_assert_int_equal(
+            s,
+            vantaq_evidence_ring_slot_offset(
+                0U, vantaq_ring_buffer_config_get_max_record_bytes(s->config), &offset0),
+            RING_BUFFER_OK);
+        slot0_state_offset = (off_t)offset0 + (off_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET;
 
-    s_assert_int_equal(s, write_bytes_at(s->ring_path, slot0_state_offset, &state_corrupted, 1U),
-                       0);
-    s_assert_int_equal(s, write_bytes_at(s->ring_path, slot1_state_offset, &state_unknown, 1U), 0);
+        s_assert_int_equal(
+            s,
+            vantaq_evidence_ring_slot_offset(
+                1U, vantaq_ring_buffer_config_get_max_record_bytes(s->config), &offset1),
+            RING_BUFFER_OK);
+        slot1_state_offset = (off_t)offset1 + (off_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET;
+    }
+
+    {
+        uint8_t encoded_corrupted, encoded_unknown;
+        s_assert_true(s, vantaq_evidence_ring_u8_encode(&encoded_corrupted, state_corrupted));
+        s_assert_true(s, vantaq_evidence_ring_u8_encode(&encoded_unknown, state_unknown));
+
+        s_assert_int_equal(
+            s, write_bytes_at(s->ring_path, slot0_state_offset, &encoded_corrupted, 1U), 0);
+        s_assert_int_equal(
+            s, write_bytes_at(s->ring_path, slot1_state_offset, &encoded_unknown, 1U), 0);
+    }
 
     s_assert_int_equal(s, vantaq_evidence_ring_buffer_read_latest(s->buffer, &result),
                        VANTAQ_EVIDENCE_RING_READ_OK);

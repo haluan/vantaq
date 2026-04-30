@@ -307,10 +307,16 @@ static void test_invalid_written_slots_are_skipped(void **state) {
     s_assert_int_equal(s, append_record(s, "ev-target", 1770020401, "{\"n\":1}"), 0);
     s_assert_int_equal(s, append_record(s, "ev-other", 1770020402, "{\"n\":2}"), 0);
 
-    vantaq_evidence_ring_le32_encode(bad_len, 9999U);
-    len_offset = (off_t)vantaq_evidence_ring_slot_offset(
-                     0U, vantaq_ring_buffer_config_get_max_record_bytes(s->config)) +
-                 (off_t)VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET;
+    s_assert_true(s, vantaq_evidence_ring_le32_encode(bad_len, 9999U));
+    {
+        size_t offset;
+        s_assert_int_equal(
+            s,
+            vantaq_evidence_ring_slot_offset(
+                0U, vantaq_ring_buffer_config_get_max_record_bytes(s->config), &offset),
+            RING_BUFFER_OK);
+        len_offset = (off_t)offset + (off_t)VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET;
+    }
     s_assert_int_equal(s, write_bytes_at(s->ring_path, len_offset, bad_len, sizeof(bad_len)), 0);
 
     s_assert_int_equal(

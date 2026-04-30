@@ -474,10 +474,13 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             struct vantaq_ring_buffer_append_result *append_result = NULL;
             ring_buffer_err_t rb_err;
             enum vantaq_evidence_ring_append_status append_status;
+            char ring_path[VANTAQ_RING_BUFFER_FILE_PATH_MAX];
+
+            vantaq_evidence_ring_buffer_path(ctx->evidence_ring_buffer, ring_path,
+                                             sizeof(ring_path));
 
             rb_err = vantaq_ring_buffer_config_create(
-                vantaq_evidence_ring_buffer_path(ctx->evidence_ring_buffer),
-                vantaq_evidence_ring_buffer_max_records(ctx->evidence_ring_buffer),
+                ring_path, vantaq_evidence_ring_buffer_max_records(ctx->evidence_ring_buffer),
                 vantaq_evidence_ring_buffer_max_record_bytes(ctx->evidence_ring_buffer), true,
                 &ring_cfg);
             if (rb_err != RING_BUFFER_OK) {

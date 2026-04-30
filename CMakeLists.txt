@@ -346,6 +346,10 @@ if(VANTAQ_BUILD_TESTS)
   target_include_directories(test_ring_buffer_checksum PRIVATE src/infrastructure/ring_buffer_file)
   target_link_libraries(test_ring_buffer_checksum PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_ring_buffer_checksum COMMAND test_ring_buffer_checksum)
+
+  add_executable(test_ring_buffer_hardening tests/unit/test_ring_buffer_hardening.c)
+  target_link_libraries(test_ring_buffer_hardening PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_ring_buffer_hardening COMMAND test_ring_buffer_hardening)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

@@ -115,7 +115,9 @@ static int read_u32_field(const char *path, off_t offset, uint32_t *out) {
     }
     fclose(fp);
 
-    *out = vantaq_evidence_ring_le32_decode(buf);
+    if (!vantaq_evidence_ring_le32_decode(buf, out)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -141,7 +143,9 @@ static int read_u64_field(const char *path, off_t offset, uint64_t *out) {
     }
 
     fclose(fp);
-    *out = vantaq_evidence_ring_le64_decode(buf);
+    if (!vantaq_evidence_ring_le64_decode(buf, out)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -234,10 +238,16 @@ static void test_create_missing_file_and_header_valid(void **state) {
         s_assert_int_equal(s, (st_dir.st_mode & 0777), 0700);
     }
 
-    expected_file_size = vantaq_evidence_ring_header_size_bytes() +
-                         (vantaq_ring_buffer_config_get_max_records(s->config) *
-                          vantaq_evidence_ring_record_slot_size_bytes(
-                              vantaq_ring_buffer_config_get_max_record_bytes(s->config)));
+    {
+        size_t slot_size;
+        s_assert_int_equal(
+            s,
+            vantaq_evidence_ring_record_slot_size_bytes(
+                vantaq_ring_buffer_config_get_max_record_bytes(s->config), &slot_size),
+            RING_BUFFER_OK);
+        expected_file_size = vantaq_evidence_ring_header_size_bytes() +
+                             (vantaq_ring_buffer_config_get_max_records(s->config) * slot_size);
+    }
 
     s_assert_int_equal(s, (size_t)st.st_size, expected_file_size);
     s_assert_int_equal(s, read_file_bytes(s->ring_path, header, sizeof(header)), 0);
@@ -245,13 +255,16 @@ static void test_create_missing_file_and_header_valid(void **state) {
     s_assert_true(s, memcmp(header + VANTAQ_EVIDENCE_RING_HEADER_MAGIC_OFFSET,
                             VANTAQ_EVIDENCE_RING_MAGIC, VANTAQ_EVIDENCE_RING_MAGIC_SIZE) == 0);
 
-    version = vantaq_evidence_ring_le32_decode(header + VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET);
-    max_records =
-        vantaq_evidence_ring_le32_decode(header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET);
-    max_record_bytes = vantaq_evidence_ring_le32_decode(
-        header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET);
-    next_sequence =
-        vantaq_evidence_ring_le64_decode(header + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET);
+    s_assert_true(s, vantaq_evidence_ring_le32_decode(
+                         header + VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET, &version));
+    s_assert_true(s, vantaq_evidence_ring_le32_decode(
+                         header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET, &max_records));
+    s_assert_true(
+        s, vantaq_evidence_ring_le32_decode(
+               header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET, &max_record_bytes));
+    s_assert_true(s,
+                  vantaq_evidence_ring_le64_decode(
+                      header + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET, &next_sequence));
 
     s_assert_int_equal(s, version, VANTAQ_EVIDENCE_RING_FORMAT_VERSION);
     s_assert_int_equal(s, max_records, 8U);
@@ -332,7 +345,8 @@ static void test_version_mismatch_returns_invalid_header(void **state) {
                        VANTAQ_EVIDENCE_RING_OPEN_OK);
     vantaq_evidence_ring_buffer_destroy(buffer);
 
-    vantaq_evidence_ring_le32_encode(ver, VANTAQ_EVIDENCE_RING_FORMAT_VERSION + 1U);
+    s_assert_true(s,
+                  vantaq_evidence_ring_le32_encode(ver, VANTAQ_EVIDENCE_RING_FORMAT_VERSION + 1U));
     s_assert_int_equal(
         s,
         write_bytes_at(s->ring_path, VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET, ver, sizeof(ver)),
@@ -371,7 +385,7 @@ static void test_corrupt_layout_sizes_returns_invalid_header(void **state) {
                        VANTAQ_EVIDENCE_RING_OPEN_OK);
     vantaq_evidence_ring_buffer_destroy(buffer);
 
-    vantaq_evidence_ring_le32_encode(bad, 0U);
+    s_assert_true(s, vantaq_evidence_ring_le32_encode(bad, 0U));
     s_assert_int_equal(s,
                        write_bytes_at(s->ring_path, VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET,
                                       bad, sizeof(bad)),
@@ -391,7 +405,7 @@ static void test_out_of_range_write_slot_returns_invalid_header(void **state) {
                        VANTAQ_EVIDENCE_RING_OPEN_OK);
     vantaq_evidence_ring_buffer_destroy(buffer);
 
-    vantaq_evidence_ring_le32_encode(write_slot, 8U);
+    s_assert_true(s, vantaq_evidence_ring_le32_encode(write_slot, 8U));
     s_assert_int_equal(s,
                        write_bytes_at(s->ring_path, VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET,
                                       write_slot, sizeof(write_slot)),

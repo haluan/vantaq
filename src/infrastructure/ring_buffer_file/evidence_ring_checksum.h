@@ -10,11 +10,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
-bool vantaq_evidence_ring_checksum_compute(const uint8_t *slot_buf, size_t max_record_bytes,
-                                           char out_checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX]);
+typedef enum {
+    VANTAQ_EVIDENCE_RING_CHECKSUM_OK = 0,
+    VANTAQ_EVIDENCE_RING_CHECKSUM_MISMATCH,
+    VANTAQ_EVIDENCE_RING_CHECKSUM_INVALID_FORMAT,
+    VANTAQ_EVIDENCE_RING_CHECKSUM_INVALID_INPUT,
+    VANTAQ_EVIDENCE_RING_CHECKSUM_ENGINE_FAILURE,
+} vantaq_evidence_ring_checksum_status_t;
 
-bool vantaq_evidence_ring_checksum_is_valid_format(const char *checksum);
+vantaq_evidence_ring_checksum_status_t
+vantaq_evidence_ring_checksum_compute(const uint8_t *slot_buf, size_t slot_buf_len,
+                                      size_t max_record_bytes,
+                                      char out_checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX]);
 
-bool vantaq_evidence_ring_checksum_verify(const uint8_t *slot_buf, size_t max_record_bytes);
+vantaq_evidence_ring_checksum_status_t
+vantaq_evidence_ring_checksum_is_valid_format(const char *checksum);
+
+vantaq_evidence_ring_checksum_status_t
+vantaq_evidence_ring_checksum_verify(const uint8_t *slot_buf, size_t slot_buf_len,
+                                     size_t max_record_bytes);
+
+vantaq_evidence_ring_checksum_status_t
+vantaq_evidence_ring_checksum_compute_into_slot(uint8_t *slot_buf, size_t slot_buf_len,
+                                                size_t max_record_bytes);
 
 #endif

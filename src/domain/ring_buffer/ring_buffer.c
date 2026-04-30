@@ -47,12 +47,12 @@ struct vantaq_ring_buffer_read_result {
 
 static const char k_empty[] = "";
 
-static void copy_text_bounded(char *dst, size_t dst_size, const char *src) {
+static bool copy_text_bounded(char *dst, size_t dst_size, const char *src) {
     size_t src_len;
     size_t copy_len;
 
     if (dst == NULL || src == NULL || dst_size == 0U) {
-        return;
+        return false;
     }
 
     src_len  = strlen(src);
@@ -62,6 +62,8 @@ static void copy_text_bounded(char *dst, size_t dst_size, const char *src) {
         memcpy(dst, src, copy_len);
     }
     dst[copy_len] = '\0';
+
+    return src_len < dst_size;
 }
 
 static bool text_is_valid(const char *value, size_t max_size) {
@@ -89,16 +91,22 @@ static ring_buffer_err_t validate_status_for_error_result(ring_buffer_err_t stat
         return RING_BUFFER_OK;
     case RING_BUFFER_OK:
     default:
-        return RING_BUFFER_INVALID_CONFIG;
+        break;
     }
+    return RING_BUFFER_INVALID_CONFIG;
 }
 
 static ring_buffer_err_t clone_record(const struct vantaq_ring_buffer_record *source,
                                       struct vantaq_ring_buffer_record **out_record) {
     struct vantaq_ring_buffer_record *cloned = NULL;
+    ring_buffer_err_t err                    = RING_BUFFER_IO_ERROR;
 
-    if (source == NULL || out_record == NULL) {
+    if (source == NULL || out_record == NULL || source->evidence_json == NULL) {
         return RING_BUFFER_INVALID_CONFIG;
+    }
+
+    if (source->evidence_json_size >= VANTAQ_RING_BUFFER_MAX_RECORD_BYTES_LIMIT) {
+        return RING_BUFFER_RECORD_TOO_LARGE;
     }
 
     *out_record = NULL;
@@ -110,11 +118,14 @@ static ring_buffer_err_t clone_record(const struct vantaq_ring_buffer_record *so
 
     VANTAQ_ZERO_STRUCT(*cloned);
 
+    if (source->evidence_json_size > SIZE_MAX - 1U) {
+        err = RING_BUFFER_RECORD_TOO_LARGE;
+        goto cleanup;
+    }
+
     cloned->evidence_json = malloc(source->evidence_json_size + 1U);
     if (cloned->evidence_json == NULL) {
-        vantaq_explicit_bzero(cloned, sizeof(*cloned));
-        free(cloned);
-        return RING_BUFFER_IO_ERROR;
+        goto cleanup;
     }
 
     cloned->record_slot        = source->record_slot;
@@ -122,16 +133,24 @@ static ring_buffer_err_t clone_record(const struct vantaq_ring_buffer_record *so
     cloned->issued_at_unix     = source->issued_at_unix;
     cloned->evidence_json_size = source->evidence_json_size;
 
-    copy_text_bounded(cloned->evidence_id, sizeof(cloned->evidence_id), source->evidence_id);
-    copy_text_bounded(cloned->verifier_id, sizeof(cloned->verifier_id), source->verifier_id);
-    copy_text_bounded(cloned->evidence_hash, sizeof(cloned->evidence_hash), source->evidence_hash);
-    copy_text_bounded(cloned->checksum, sizeof(cloned->checksum), source->checksum);
+    if (!copy_text_bounded(cloned->evidence_id, sizeof(cloned->evidence_id), source->evidence_id) ||
+        !copy_text_bounded(cloned->verifier_id, sizeof(cloned->verifier_id), source->verifier_id) ||
+        !copy_text_bounded(cloned->evidence_hash, sizeof(cloned->evidence_hash),
+                           source->evidence_hash) ||
+        !copy_text_bounded(cloned->checksum, sizeof(cloned->checksum), source->checksum)) {
+        err = RING_BUFFER_RECORD_CORRUPTED;
+        goto cleanup;
+    }
 
     memcpy(cloned->evidence_json, source->evidence_json, source->evidence_json_size);
     cloned->evidence_json[source->evidence_json_size] = '\0';
 
     *out_record = cloned;
     return RING_BUFFER_OK;
+
+cleanup:
+    vantaq_ring_buffer_record_destroy(cloned);
+    return err;
 }
 
 ring_buffer_err_t vantaq_ring_buffer_config_create(const char *file_path, size_t max_records,
@@ -147,7 +166,8 @@ ring_buffer_err_t vantaq_ring_buffer_config_create(const char *file_path, size_t
     if (!text_is_valid(file_path, VANTAQ_RING_BUFFER_FILE_PATH_MAX)) {
         return RING_BUFFER_INVALID_CONFIG;
     }
-    if (max_records == 0U || max_record_bytes == 0U) {
+    if (max_records == 0U || max_record_bytes == 0U ||
+        max_record_bytes > VANTAQ_RING_BUFFER_MAX_RECORD_BYTES_LIMIT) {
         return RING_BUFFER_INVALID_CONFIG;
     }
 
@@ -174,7 +194,8 @@ vantaq_ring_buffer_config_validate(const struct vantaq_ring_buffer_config *confi
     if (!text_is_valid(config->file_path, sizeof(config->file_path))) {
         return RING_BUFFER_INVALID_CONFIG;
     }
-    if (config->max_records == 0U || config->max_record_bytes == 0U) {
+    if (config->max_records == 0U || config->max_record_bytes == 0U ||
+        config->max_record_bytes > VANTAQ_RING_BUFFER_MAX_RECORD_BYTES_LIMIT) {
         return RING_BUFFER_INVALID_CONFIG;
     }
 
@@ -221,6 +242,7 @@ ring_buffer_err_t vantaq_ring_buffer_header_create(uint64_t next_slot, uint64_t 
         return RING_BUFFER_IO_ERROR;
     }
 
+    VANTAQ_ZERO_STRUCT(*created);
     created->next_slot      = next_slot;
     created->next_sequence  = next_sequence;
     created->active_records = active_records;
@@ -259,6 +281,7 @@ ring_buffer_err_t vantaq_ring_buffer_record_create(const struct vantaq_ring_buff
                                                    struct vantaq_ring_buffer_record **out_record) {
     struct vantaq_ring_buffer_record *created = NULL;
     size_t evidence_json_size;
+    ring_buffer_err_t err = RING_BUFFER_IO_ERROR;
 
     if (out_record == NULL || vantaq_ring_buffer_config_validate(config) != RING_BUFFER_OK) {
         return RING_BUFFER_INVALID_CONFIG;
@@ -290,11 +313,14 @@ ring_buffer_err_t vantaq_ring_buffer_record_create(const struct vantaq_ring_buff
 
     VANTAQ_ZERO_STRUCT(*created);
 
+    if (evidence_json_size > SIZE_MAX - 1U) {
+        err = RING_BUFFER_RECORD_TOO_LARGE;
+        goto cleanup;
+    }
+
     created->evidence_json = malloc(evidence_json_size + 1U);
     if (created->evidence_json == NULL) {
-        vantaq_explicit_bzero(created, sizeof(*created));
-        free(created);
-        return RING_BUFFER_IO_ERROR;
+        goto cleanup;
     }
 
     created->record_slot        = record_slot;
@@ -302,16 +328,23 @@ ring_buffer_err_t vantaq_ring_buffer_record_create(const struct vantaq_ring_buff
     created->issued_at_unix     = issued_at_unix;
     created->evidence_json_size = evidence_json_size;
 
-    copy_text_bounded(created->evidence_id, sizeof(created->evidence_id), evidence_id);
-    copy_text_bounded(created->verifier_id, sizeof(created->verifier_id), verifier_id);
-    copy_text_bounded(created->evidence_hash, sizeof(created->evidence_hash), evidence_hash);
-    copy_text_bounded(created->checksum, sizeof(created->checksum), checksum);
+    if (!copy_text_bounded(created->evidence_id, sizeof(created->evidence_id), evidence_id) ||
+        !copy_text_bounded(created->verifier_id, sizeof(created->verifier_id), verifier_id) ||
+        !copy_text_bounded(created->evidence_hash, sizeof(created->evidence_hash), evidence_hash) ||
+        !copy_text_bounded(created->checksum, sizeof(created->checksum), checksum)) {
+        err = RING_BUFFER_INVALID_CONFIG;
+        goto cleanup;
+    }
 
     memcpy(created->evidence_json, evidence_json, evidence_json_size);
     created->evidence_json[evidence_json_size] = '\0';
 
     *out_record = created;
     return RING_BUFFER_OK;
+
+cleanup:
+    vantaq_ring_buffer_record_destroy(created);
+    return err;
 }
 
 void vantaq_ring_buffer_record_destroy(struct vantaq_ring_buffer_record *record) {
@@ -386,6 +419,7 @@ ring_buffer_err_t vantaq_ring_buffer_append_result_create_success(
         return RING_BUFFER_IO_ERROR;
     }
 
+    VANTAQ_ZERO_STRUCT(*created);
     created->status          = RING_BUFFER_OK;
     created->record_slot     = record_slot;
     created->record_sequence = record_sequence;
@@ -412,9 +446,10 @@ ring_buffer_err_t vantaq_ring_buffer_append_result_create_error(
         return RING_BUFFER_IO_ERROR;
     }
 
+    VANTAQ_ZERO_STRUCT(*created);
     created->status          = status;
-    created->record_slot     = 0U;
-    created->record_sequence = 0U;
+    created->record_slot     = VANTAQ_RING_BUFFER_INVALID_SLOT;
+    created->record_sequence = VANTAQ_RING_BUFFER_INVALID_SEQUENCE;
 
     *out_result = created;
     return RING_BUFFER_OK;
@@ -524,7 +559,9 @@ vantaq_ring_buffer_read_result_create_error(ring_buffer_err_t status,
     }
 
     VANTAQ_ZERO_STRUCT(*created);
-    created->status = status;
+    created->status          = status;
+    created->record_slot     = VANTAQ_RING_BUFFER_INVALID_SLOT;
+    created->record_sequence = VANTAQ_RING_BUFFER_INVALID_SEQUENCE;
 
     *out_result = created;
     return RING_BUFFER_OK;

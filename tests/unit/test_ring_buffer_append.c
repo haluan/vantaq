@@ -100,7 +100,9 @@ static int read_header_u32(const char *path, off_t offset, uint32_t *out) {
         return -1;
     }
 
-    *out = vantaq_evidence_ring_le32_decode(buf);
+    if (!vantaq_evidence_ring_le32_decode(buf, out)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -114,7 +116,9 @@ static int read_header_u64(const char *path, off_t offset, uint64_t *out) {
         return -1;
     }
 
-    *out = vantaq_evidence_ring_le64_decode(buf);
+    if (!vantaq_evidence_ring_le64_decode(buf, out)) {
+        return -1;
+    }
     return 0;
 }
 
@@ -343,24 +347,36 @@ static void test_stored_record_readable_by_test_helper(void **state) {
 
     s_assert_true(s, vantaq_evidence_ring_buffer_record_slot_size(s->buffer) <= sizeof(slot_buf));
 
-    s_assert_int_equal(s,
-                       read_bytes_at(s->ring_path,
-                                     (off_t)vantaq_evidence_ring_slot_offset(
-                                         vantaq_ring_buffer_append_result_get_record_slot(result),
-                                         vantaq_evidence_ring_buffer_max_record_bytes(s->buffer)),
-                                     slot_buf,
-                                     vantaq_evidence_ring_buffer_record_slot_size(s->buffer)),
-                       0);
+    {
+        size_t offset;
+        s_assert_int_equal(s,
+                           vantaq_evidence_ring_slot_offset(
+                               vantaq_ring_buffer_append_result_get_record_slot(result),
+                               vantaq_evidence_ring_buffer_max_record_bytes(s->buffer), &offset),
+                           RING_BUFFER_OK);
 
-    s_assert_int_equal(s, slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET],
-                       VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN);
+        s_assert_int_equal(s,
+                           read_bytes_at(s->ring_path, (off_t)offset, slot_buf,
+                                         vantaq_evidence_ring_buffer_record_slot_size(s->buffer)),
+                           0);
+    }
 
-    slot = vantaq_evidence_ring_le32_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET);
-    seq  = vantaq_evidence_ring_le64_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET);
-    issued_at = vantaq_evidence_ring_le64_decode(slot_buf +
-                                                 VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET);
-    json_len  = vantaq_evidence_ring_le32_decode(
-        slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET);
+    {
+        uint8_t state;
+        s_assert_true(s, vantaq_evidence_ring_u8_decode(
+                             slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET, &state));
+        s_assert_int_equal(s, state, VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN);
+    }
+
+    s_assert_true(s, vantaq_evidence_ring_le32_decode(
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET, &slot));
+    s_assert_true(s, vantaq_evidence_ring_le64_decode(
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET, &seq));
+    s_assert_true(s, vantaq_evidence_ring_le64_decode(
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET, &issued_at));
+    s_assert_true(s,
+                  vantaq_evidence_ring_le32_decode(
+                      slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET, &json_len));
 
     s_assert_int_equal(s, slot, 0U);
     s_assert_int_equal(s, seq, 1U);

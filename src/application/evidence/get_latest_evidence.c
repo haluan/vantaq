@@ -5,32 +5,21 @@
 
 #include "domain/evidence/evidence.h"
 #include "domain/ring_buffer/ring_buffer.h"
+#include "evidence_internal.h"
 #include "evidence_ring_buffer.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-static bool verifier_id_is_valid(const char *verifier_id) {
-    size_t len;
-
-    if (verifier_id == NULL) {
-        return false;
-    }
-
-    len = strnlen(verifier_id, VANTAQ_VERIFIER_ID_MAX);
-    if (len == 0U || len >= VANTAQ_VERIFIER_ID_MAX) {
-        return false;
-    }
-
-    return true;
-}
-
 enum vantaq_app_get_latest_evidence_status
 vantaq_app_get_latest_evidence(struct vantaq_evidence_ring_buffer *ring_buffer,
                                const char *verifier_id, char **out_evidence_json) {
+    enum vantaq_app_get_latest_evidence_status app_status =
+        VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
     enum vantaq_evidence_ring_read_status read_status;
     struct vantaq_ring_buffer_read_result *read_result = NULL;
     const struct vantaq_ring_buffer_record *record;
+    const char *record_verifier_id;
     const char *evidence_json;
     size_t evidence_json_len;
     char *copy;
@@ -40,7 +29,8 @@ vantaq_app_get_latest_evidence(struct vantaq_evidence_ring_buffer *ring_buffer,
     }
     *out_evidence_json = NULL;
 
-    if (ring_buffer == NULL || !verifier_id_is_valid(verifier_id)) {
+    if (ring_buffer == NULL ||
+        !vantaq_app_evidence_text_is_valid(verifier_id, VANTAQ_VERIFIER_ID_MAX)) {
         return VANTAQ_APP_GET_LATEST_EVIDENCE_INVALID_ARGUMENT;
     }
 
@@ -49,41 +39,65 @@ vantaq_app_get_latest_evidence(struct vantaq_evidence_ring_buffer *ring_buffer,
     if (read_status != VANTAQ_EVIDENCE_RING_READ_OK) {
         return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
     }
+
     if (read_result == NULL) {
         return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
     }
 
-    if (vantaq_ring_buffer_read_result_get_status(read_result) == RING_BUFFER_RECORD_NOT_FOUND) {
-        vantaq_ring_buffer_read_result_destroy(read_result);
-        return VANTAQ_APP_GET_LATEST_EVIDENCE_NOT_FOUND;
-    }
-    if (vantaq_ring_buffer_read_result_get_status(read_result) != RING_BUFFER_OK) {
-        vantaq_ring_buffer_read_result_destroy(read_result);
-        return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
+    switch (vantaq_ring_buffer_read_result_get_status(read_result)) {
+    case RING_BUFFER_OK:
+        break;
+    case RING_BUFFER_RECORD_NOT_FOUND:
+        app_status = VANTAQ_APP_GET_LATEST_EVIDENCE_NOT_FOUND;
+        goto cleanup;
+    case RING_BUFFER_RECORD_CORRUPTED:
+        app_status = VANTAQ_APP_GET_LATEST_EVIDENCE_RECORD_CORRUPTED;
+        goto cleanup;
+    default:
+        app_status = VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
+        goto cleanup;
     }
 
     record = vantaq_ring_buffer_read_result_get_record(read_result);
     if (record == NULL) {
-        vantaq_ring_buffer_read_result_destroy(read_result);
-        return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
+        goto cleanup;
     }
 
-    evidence_json = vantaq_ring_buffer_record_get_evidence_json(record);
-    if (evidence_json == NULL) {
-        vantaq_ring_buffer_read_result_destroy(read_result);
-        return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
+    /* S-2: Defense-in-depth post-read verifier verification */
+    record_verifier_id = vantaq_ring_buffer_record_get_verifier_id(record);
+    if (record_verifier_id == NULL || strcmp(record_verifier_id, verifier_id) != 0) {
+        app_status = VANTAQ_APP_GET_LATEST_EVIDENCE_NOT_FOUND;
+        goto cleanup;
     }
 
-    evidence_json_len = strlen(evidence_json);
-    copy              = (char *)malloc(evidence_json_len + 1U);
+    evidence_json     = vantaq_ring_buffer_record_get_evidence_json(record);
+    evidence_json_len = vantaq_ring_buffer_record_get_evidence_json_size(record);
+
+    /* C-1: Handle empty JSON if it ever reaches here (though infrastructure should prevent it) */
+    if (evidence_json == NULL || evidence_json[0] == '\0' || evidence_json_len == 0U) {
+        goto cleanup;
+    }
+
+    /* S-1: Application-layer bound check before allocation */
+    if (evidence_json_len >= VANTAQ_RING_BUFFER_MAX_RECORD_BYTES_LIMIT) {
+        goto cleanup;
+    }
+
+    copy = (char *)malloc(evidence_json_len + 1U);
     if (copy == NULL) {
-        vantaq_ring_buffer_read_result_destroy(read_result);
-        return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
+        goto cleanup;
     }
 
-    memcpy(copy, evidence_json, evidence_json_len + 1U);
-    vantaq_ring_buffer_read_result_destroy(read_result);
-    *out_evidence_json = copy;
+    memcpy(copy, evidence_json, evidence_json_len);
+    copy[evidence_json_len] = '\0';
 
-    return VANTAQ_APP_GET_LATEST_EVIDENCE_OK;
+    *out_evidence_json = copy;
+    app_status         = VANTAQ_APP_GET_LATEST_EVIDENCE_OK;
+
+cleanup:
+    if (read_result != NULL) {
+        vantaq_ring_buffer_read_result_destroy(read_result);
+    }
+
+    return app_status;
 }

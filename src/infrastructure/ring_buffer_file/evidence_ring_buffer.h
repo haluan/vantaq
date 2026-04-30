@@ -54,19 +54,22 @@ enum vantaq_evidence_ring_read_status
 vantaq_evidence_ring_buffer_read_by_evidence_id(struct vantaq_evidence_ring_buffer *buffer,
                                                 const char *evidence_id,
                                                 struct vantaq_ring_buffer_read_result **out_result);
+enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_evidence_id_for_verifier(
+    struct vantaq_evidence_ring_buffer *buffer, const char *evidence_id, const char *verifier_id,
+    struct vantaq_ring_buffer_read_result **out_result);
 enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by_verifier_id(
     struct vantaq_evidence_ring_buffer *buffer, const char *verifier_id,
     struct vantaq_ring_buffer_read_result **out_result);
 
-int vantaq_evidence_ring_buffer_fd(const struct vantaq_evidence_ring_buffer *buffer);
-const char *vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer);
+void vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer, char *out,
+                                      size_t out_size);
 size_t vantaq_evidence_ring_buffer_max_records(const struct vantaq_evidence_ring_buffer *buffer);
 size_t
 vantaq_evidence_ring_buffer_max_record_bytes(const struct vantaq_evidence_ring_buffer *buffer);
 size_t
 vantaq_evidence_ring_buffer_record_slot_size(const struct vantaq_evidence_ring_buffer *buffer);
 size_t vantaq_evidence_ring_buffer_file_size(const struct vantaq_evidence_ring_buffer *buffer);
-const char *
-vantaq_evidence_ring_buffer_last_error(const struct vantaq_evidence_ring_buffer *buffer);
+void vantaq_evidence_ring_buffer_last_error(const struct vantaq_evidence_ring_buffer *buffer,
+                                            char *out, size_t out_size);
 
 #endif

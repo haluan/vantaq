@@ -125,6 +125,23 @@ static enum vantaq_evidence_ring_open_status ensure_parent_dirs(const char *path
     return VANTAQ_EVIDENCE_RING_OPEN_OK;
 }
 
+static enum vantaq_evidence_ring_open_status to_off_t(size_t value, off_t *out) {
+    if (out == NULL) {
+        return VANTAQ_EVIDENCE_RING_OPEN_INVALID_ARGUMENT;
+    }
+#if defined(OFF_T_MAX)
+    if (value > (size_t)OFF_T_MAX) {
+        return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+    }
+#else
+    if (sizeof(off_t) < sizeof(size_t) && value > (size_t)LLONG_MAX) {
+        return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+    }
+#endif
+    *out = (off_t)value;
+    return VANTAQ_EVIDENCE_RING_OPEN_OK;
+}
+
 static enum vantaq_evidence_ring_open_status write_all(int fd, const uint8_t *buf, size_t len) {
     size_t written = 0U;
 
@@ -138,6 +155,9 @@ static enum vantaq_evidence_ring_open_status write_all(int fd, const uint8_t *bu
             if (errno == EINTR) {
                 continue;
             }
+            return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+        }
+        if (rc == 0) {
             return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
         }
         written += (size_t)rc;
@@ -171,9 +191,10 @@ static enum vantaq_evidence_ring_open_status read_all(int fd, uint8_t *buf, size
 }
 
 static enum vantaq_evidence_ring_open_status
-read_validated_header(struct vantaq_evidence_ring_buffer *buffer,
+read_validated_header(struct vantaq_evidence_ring_buffer *buffer, const struct stat *caller_st,
                       struct vantaq_ring_header_state *out_state) {
     struct stat st;
+    const struct stat *st_ptr = NULL;
     uint32_t version;
     uint32_t persisted_header_size;
     uint32_t persisted_slot_size;
@@ -188,17 +209,22 @@ read_validated_header(struct vantaq_evidence_ring_buffer *buffer,
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_ARGUMENT;
     }
 
-    if (fstat(buffer->fd, &st) != 0) {
-        set_error(buffer, "fstat failed: %s", strerror(errno));
-        return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+    if (caller_st != NULL) {
+        st_ptr = caller_st;
+    } else {
+        if (fstat(buffer->fd, &st) != 0) {
+            set_error(buffer, "fstat failed: %s", strerror(errno));
+            return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+        }
+        st_ptr = &st;
     }
 
-    if (!S_ISREG(st.st_mode)) {
+    if (!S_ISREG(st_ptr->st_mode)) {
         set_error(buffer, "path is not a regular file");
         return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
     }
 
-    if ((size_t)st.st_size < header_size) {
+    if ((size_t)st_ptr->st_size < header_size) {
         set_error(buffer, "file size mismatch");
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
     }
@@ -220,26 +246,36 @@ read_validated_header(struct vantaq_evidence_ring_buffer *buffer,
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
     }
 
-    version = vantaq_evidence_ring_le32_decode(out_state->raw +
-                                               VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET);
+    if (!vantaq_evidence_ring_le32_decode(
+            out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET, &version)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
+    }
     if (version != VANTAQ_EVIDENCE_RING_FORMAT_VERSION) {
         set_error(buffer, "invalid version: %u", version);
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
     }
 
-    persisted_header_size = vantaq_evidence_ring_le32_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_HEADER_SIZE_OFFSET);
-    persisted_slot_size = vantaq_evidence_ring_le32_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET);
-    persisted_max_records = vantaq_evidence_ring_le32_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET);
-    persisted_max_record_bytes = vantaq_evidence_ring_le32_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET);
+    if (!vantaq_evidence_ring_le32_decode(out_state->raw +
+                                              VANTAQ_EVIDENCE_RING_HEADER_HEADER_SIZE_OFFSET,
+                                          &persisted_header_size) ||
+        !vantaq_evidence_ring_le32_decode(
+            out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET, &persisted_slot_size) ||
+        !vantaq_evidence_ring_le32_decode(out_state->raw +
+                                              VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET,
+                                          &persisted_max_records) ||
+        !vantaq_evidence_ring_le32_decode(out_state->raw +
+                                              VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET,
+                                          &persisted_max_record_bytes)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
+    }
 
-    out_state->write_slot = vantaq_evidence_ring_le32_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET);
-    next_sequence = vantaq_evidence_ring_le64_decode(
-        out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET);
+    if (!vantaq_evidence_ring_le32_decode(out_state->raw +
+                                              VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET,
+                                          &out_state->write_slot) ||
+        !vantaq_evidence_ring_le64_decode(
+            out_state->raw + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET, &next_sequence)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
+    }
     out_state->next_sequence = next_sequence;
 
     if (persisted_header_size != (uint32_t)header_size || persisted_slot_size == 0U ||
@@ -250,7 +286,7 @@ read_validated_header(struct vantaq_evidence_ring_buffer *buffer,
 
     status = compute_file_size((size_t)persisted_header_size, (size_t)persisted_max_records,
                                (size_t)persisted_slot_size, &persisted_file_size);
-    if (status != VANTAQ_EVIDENCE_RING_OPEN_OK || (size_t)st.st_size != persisted_file_size) {
+    if (status != VANTAQ_EVIDENCE_RING_OPEN_OK || (size_t)st_ptr->st_size != persisted_file_size) {
         set_error(buffer, "file size mismatch");
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_HEADER;
     }
@@ -290,6 +326,7 @@ static void copy_bounded_field(uint8_t *dst, size_t dst_size, const char *src) {
     if (copy_len > 0U) {
         memcpy(dst, src, copy_len);
     }
+    dst[copy_len] = '\0';
 }
 
 static enum vantaq_evidence_ring_append_status
@@ -333,7 +370,7 @@ static enum vantaq_evidence_ring_read_status map_domain_status_to_read(ring_buff
     case RING_BUFFER_OK:
         return VANTAQ_EVIDENCE_RING_READ_OK;
     case RING_BUFFER_IO_ERROR:
-        return VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
+        return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     case RING_BUFFER_INVALID_CONFIG:
     case RING_BUFFER_RECORD_TOO_LARGE:
     case RING_BUFFER_RECORD_NOT_FOUND:
@@ -343,16 +380,25 @@ static enum vantaq_evidence_ring_read_status map_domain_status_to_read(ring_buff
     }
 }
 
-static enum vantaq_evidence_ring_open_status read_at_exact(int fd, off_t offset, uint8_t *buf,
+static enum vantaq_evidence_ring_open_status read_at_exact(int fd, size_t offset, uint8_t *buf,
                                                            size_t len) {
     size_t consumed = 0U;
+    off_t base_offset;
 
     if (fd < 0 || buf == NULL) {
         return VANTAQ_EVIDENCE_RING_OPEN_INVALID_ARGUMENT;
     }
+    if (to_off_t(offset, &base_offset) != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+        return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+    }
 
     while (consumed < len) {
-        ssize_t rc = pread(fd, buf + consumed, len - consumed, offset + (off_t)consumed);
+        off_t current_offset;
+        if (to_off_t(consumed, &current_offset) != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+            return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+        }
+
+        ssize_t rc = pread(fd, buf + consumed, len - consumed, base_offset + current_offset);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -428,26 +474,34 @@ static bool parse_slot_candidate(const struct vantaq_evidence_ring_buffer *buffe
         return false;
     }
 
-    record_slot =
-        vantaq_evidence_ring_le32_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET);
-    if (record_slot != slot_index || record_slot >= buffer->max_records) {
+    if (!vantaq_evidence_ring_le32_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET,
+                                          &record_slot)) {
+        return false;
+    }
+    if (record_slot != (uint32_t)slot_index || record_slot >= buffer->max_records) {
         return false;
     }
 
-    record_sequence =
-        vantaq_evidence_ring_le64_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET);
+    if (!vantaq_evidence_ring_le64_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET,
+                                          &record_sequence)) {
+        return false;
+    }
     if (record_sequence < 1U) {
         return false;
     }
 
-    issued_at_raw = vantaq_evidence_ring_le64_decode(
-        slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET);
+    if (!vantaq_evidence_ring_le64_decode(
+            slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET, &issued_at_raw)) {
+        return false;
+    }
     if (issued_at_raw == 0U || issued_at_raw > (uint64_t)INT64_MAX) {
         return false;
     }
 
-    evidence_json_len = vantaq_evidence_ring_le32_decode(
-        slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET);
+    if (!vantaq_evidence_ring_le32_decode(
+            slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET, &evidence_json_len)) {
+        return false;
+    }
     if (evidence_json_len == 0U || evidence_json_len > buffer->max_record_bytes) {
         return false;
     }
@@ -468,6 +522,83 @@ static bool parse_slot_candidate(const struct vantaq_evidence_ring_buffer *buffe
     return true;
 }
 
+static ring_buffer_err_t
+reconstruct_record_from_slot(const struct vantaq_evidence_ring_buffer *buffer,
+                             const struct vantaq_ring_buffer_config *config,
+                             const uint8_t *slot_buf,
+                             const struct vantaq_ring_slot_candidate *candidate,
+                             struct vantaq_ring_buffer_record **out_record) {
+    uint64_t issued_at_raw;
+    uint32_t evidence_json_len;
+    char evidence_id[VANTAQ_EVIDENCE_ID_MAX];
+    char verifier_id[VANTAQ_VERIFIER_ID_MAX];
+    char evidence_hash[VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX];
+    char checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
+    char *evidence_json           = NULL;
+    ring_buffer_err_t status      = RING_BUFFER_OK;
+    const size_t max_record_bytes = vantaq_evidence_ring_buffer_max_record_bytes(buffer);
+
+    if (buffer == NULL || config == NULL || slot_buf == NULL || candidate == NULL ||
+        out_record == NULL) {
+        return RING_BUFFER_IO_ERROR;
+    }
+
+    if (!vantaq_evidence_ring_le64_decode(
+            slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET, &issued_at_raw) ||
+        !vantaq_evidence_ring_le32_decode(
+            slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET, &evidence_json_len)) {
+        return RING_BUFFER_RECORD_CORRUPTED;
+    }
+
+    if (candidate->record_slot >= buffer->max_records || candidate->record_sequence < 1U ||
+        issued_at_raw == 0U || issued_at_raw > (uint64_t)INT64_MAX || evidence_json_len == 0U ||
+        evidence_json_len > max_record_bytes) {
+        return RING_BUFFER_RECORD_CORRUPTED;
+    }
+
+    if (!ring_text_field_is_valid(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
+                                  VANTAQ_EVIDENCE_ID_MAX) ||
+        !ring_text_field_is_valid(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
+                                  VANTAQ_VERIFIER_ID_MAX) ||
+        !ring_text_field_is_valid(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
+                                  VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX) ||
+        !ring_text_field_is_valid(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
+                                  VANTAQ_RING_BUFFER_CHECKSUM_MAX)) {
+        return RING_BUFFER_RECORD_CORRUPTED;
+    }
+
+    evidence_json = malloc((size_t)evidence_json_len + 1U);
+    if (evidence_json == NULL) {
+        return RING_BUFFER_IO_ERROR;
+    }
+
+    memcpy(evidence_json, slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET,
+           evidence_json_len);
+    evidence_json[evidence_json_len] = '\0';
+
+    ring_copy_text_field(evidence_id, sizeof(evidence_id),
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
+                         VANTAQ_EVIDENCE_ID_MAX);
+    ring_copy_text_field(verifier_id, sizeof(verifier_id),
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
+                         VANTAQ_VERIFIER_ID_MAX);
+    ring_copy_text_field(evidence_hash, sizeof(evidence_hash),
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
+                         VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX);
+    ring_copy_text_field(checksum, sizeof(checksum),
+                         slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
+                         VANTAQ_RING_BUFFER_CHECKSUM_MAX);
+
+    status = vantaq_ring_buffer_record_create(
+        config, candidate->record_slot, candidate->record_sequence, evidence_id, verifier_id,
+        (int64_t)issued_at_raw, evidence_json, evidence_hash, checksum, out_record);
+
+    vantaq_explicit_bzero(evidence_json, (size_t)evidence_json_len + 1U);
+    free(evidence_json);
+
+    return status;
+}
+
 static enum vantaq_evidence_ring_open_status
 init_new_file(struct vantaq_evidence_ring_buffer *buffer, size_t header_size, size_t slot_size,
               size_t total_file_size) {
@@ -484,25 +615,39 @@ init_new_file(struct vantaq_evidence_ring_buffer *buffer, size_t header_size, si
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_MAGIC_OFFSET, VANTAQ_EVIDENCE_RING_MAGIC,
            VANTAQ_EVIDENCE_RING_MAGIC_SIZE);
 
-    vantaq_evidence_ring_le32_encode(tmp32, VANTAQ_EVIDENCE_RING_FORMAT_VERSION);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, VANTAQ_EVIDENCE_RING_FORMAT_VERSION)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_VERSION_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)header_size);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)header_size)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_HEADER_SIZE_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)slot_size);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)slot_size)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_SLOT_SIZE_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)buffer->max_records);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)buffer->max_records)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORDS_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)buffer->max_record_bytes);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)buffer->max_record_bytes)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_MAX_RECORD_BYTES_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le32_encode(tmp32, 0U);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, 0U)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le64_encode(tmp64, 1U);
+    if (!vantaq_evidence_ring_le64_encode(tmp64, 1U)) {
+        return VANTAQ_EVIDENCE_RING_OPEN_FAILED;
+    }
     memcpy(header + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET, tmp64, sizeof(tmp64));
 
     if (lseek(buffer->fd, 0, SEEK_SET) < 0) {
@@ -515,24 +660,19 @@ init_new_file(struct vantaq_evidence_ring_buffer *buffer, size_t header_size, si
         return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
     }
 
-    if (ftruncate(buffer->fd, (off_t)total_file_size) != 0) {
-        set_error(buffer, "ftruncate failed: %s", strerror(errno));
-        return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+    {
+        off_t off;
+        if (to_off_t(total_file_size, &off) != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+            set_error(buffer, "file size too large for off_t");
+            return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+        }
+        if (ftruncate(buffer->fd, off) != 0) {
+            set_error(buffer, "ftruncate failed: %s", strerror(errno));
+            return VANTAQ_EVIDENCE_RING_OPEN_IO_ERROR;
+        }
     }
 
     return VANTAQ_EVIDENCE_RING_OPEN_OK;
-}
-
-static enum vantaq_evidence_ring_open_status
-validate_existing_header(struct vantaq_evidence_ring_buffer *buffer, const struct stat *st,
-                         size_t header_size, size_t slot_size, size_t total_file_size) {
-    struct vantaq_ring_header_state state;
-    (void)st;
-    (void)header_size;
-    (void)slot_size;
-    (void)total_file_size;
-
-    return read_validated_header(buffer, &state);
 }
 
 enum vantaq_evidence_ring_open_status
@@ -540,6 +680,7 @@ vantaq_evidence_ring_buffer_open(const struct vantaq_ring_buffer_config *config,
                                  struct vantaq_evidence_ring_buffer **out_buffer) {
     struct vantaq_evidence_ring_buffer *buffer   = NULL;
     enum vantaq_evidence_ring_open_status status = VANTAQ_EVIDENCE_RING_OPEN_OK;
+    struct vantaq_ring_header_state header_state;
     const char *path;
     size_t header_size;
     size_t slot_size;
@@ -583,7 +724,12 @@ vantaq_evidence_ring_buffer_open(const struct vantaq_ring_buffer_config *config,
     memcpy(buffer->path, path, strlen(path) + 1U);
 
     header_size = vantaq_evidence_ring_header_size_bytes();
-    slot_size   = vantaq_evidence_ring_record_slot_size_bytes(buffer->max_record_bytes);
+    if (vantaq_evidence_ring_record_slot_size_bytes(buffer->max_record_bytes, &slot_size) !=
+        RING_BUFFER_OK) {
+        status = VANTAQ_EVIDENCE_RING_OPEN_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+
     if (slot_size > UINT32_MAX || header_size > UINT32_MAX || buffer->max_records > UINT32_MAX ||
         buffer->max_record_bytes > UINT32_MAX) {
         status = VANTAQ_EVIDENCE_RING_OPEN_INVALID_ARGUMENT;
@@ -604,7 +750,11 @@ vantaq_evidence_ring_buffer_open(const struct vantaq_ring_buffer_config *config,
         goto cleanup;
     }
 
-    buffer->fd = open(buffer->path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    buffer->fd = open(buffer->path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (buffer->fd < 0 && errno == EEXIST) {
+        buffer->fd = open(buffer->path, O_RDWR | O_CLOEXEC, 0600);
+    }
+
     if (buffer->fd < 0) {
         set_error(buffer, "open failed for %s: %s", buffer->path, strerror(errno));
         status = VANTAQ_EVIDENCE_RING_OPEN_FAILED;
@@ -628,8 +778,12 @@ vantaq_evidence_ring_buffer_open(const struct vantaq_ring_buffer_config *config,
         if (status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
             goto cleanup;
         }
+        status = read_validated_header(buffer, NULL, &header_state);
+        if (status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+            goto cleanup;
+        }
     } else {
-        status = validate_existing_header(buffer, &st, header_size, slot_size, total_file_size);
+        status = read_validated_header(buffer, &st, &header_state);
         if (status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
             goto cleanup;
         }
@@ -692,7 +846,6 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     const char *verifier_id;
     const char *evidence_json;
     const char *evidence_hash;
-    char computed_checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
     int64_t issued_at_unix;
     size_t evidence_json_size;
     size_t slot_offset;
@@ -729,7 +882,7 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     }
     lock_held = true;
 
-    open_status = read_validated_header(buffer, &header_state);
+    open_status = read_validated_header(buffer, NULL, &header_state);
     if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
         append_status = map_open_status_to_append(open_status);
         goto cleanup;
@@ -738,7 +891,11 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     assigned_slot     = header_state.write_slot;
     assigned_sequence = header_state.next_sequence;
 
-    slot_offset = vantaq_evidence_ring_slot_offset((size_t)assigned_slot, buffer->max_record_bytes);
+    if (vantaq_evidence_ring_slot_offset((size_t)assigned_slot, buffer->max_record_bytes,
+                                         &slot_offset) != RING_BUFFER_OK) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     if (slot_offset > buffer->file_size || (buffer->file_size - slot_offset) < buffer->slot_size) {
         append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
         goto cleanup;
@@ -750,19 +907,34 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
         goto cleanup;
     }
 
-    slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] =
-        (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN;
+    if (!vantaq_evidence_ring_u8_encode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                        (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
 
-    vantaq_evidence_ring_le32_encode(tmp32, assigned_slot);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, assigned_slot)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SLOT_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le64_encode(tmp64, assigned_sequence);
+    if (!vantaq_evidence_ring_le64_encode(tmp64, assigned_sequence)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_SEQUENCE_OFFSET, tmp64, sizeof(tmp64));
 
-    vantaq_evidence_ring_le64_encode(tmp64, (uint64_t)issued_at_unix);
+    if (!vantaq_evidence_ring_le64_encode(tmp64, (uint64_t)issued_at_unix)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET, tmp64, sizeof(tmp64));
 
-    vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)evidence_json_size);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, (uint32_t)evidence_json_size)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET, tmp32, sizeof(tmp32));
 
     copy_bounded_field(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
@@ -774,19 +946,35 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET, evidence_json,
            evidence_json_size);
 
-    VANTAQ_ZERO_STRUCT(computed_checksum);
-    if (!vantaq_evidence_ring_checksum_compute(slot_buf, buffer->max_record_bytes,
-                                               computed_checksum)) {
+    /* Compute checksum with the final WRITTEN state so it validates correctly after commit */
+    if (!vantaq_evidence_ring_u8_encode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                        (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN)) {
         append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
         goto cleanup;
     }
-    copy_bounded_field(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                       VANTAQ_RING_BUFFER_CHECKSUM_MAX, computed_checksum);
 
-    if (lseek(buffer->fd, (off_t)slot_offset, SEEK_SET) < 0) {
-        set_error(buffer, "slot seek failed: %s", strerror(errno));
-        append_status = VANTAQ_EVIDENCE_RING_APPEND_WRITE_FAILED;
+    if (vantaq_evidence_ring_checksum_compute_into_slot(slot_buf, buffer->slot_size,
+                                                        buffer->max_record_bytes) !=
+        VANTAQ_EVIDENCE_RING_CHECKSUM_OK) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
         goto cleanup;
+    }
+
+    /* Reset to EMPTY for the initial write (crash-safe commit marker) */
+    if (!vantaq_evidence_ring_u8_encode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                        (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
+
+    {
+        off_t off;
+        if (to_off_t(slot_offset, &off) != VANTAQ_EVIDENCE_RING_OPEN_OK ||
+            lseek(buffer->fd, off, SEEK_SET) < 0) {
+            set_error(buffer, "slot seek failed: %s", strerror(errno));
+            append_status = VANTAQ_EVIDENCE_RING_APPEND_WRITE_FAILED;
+            goto cleanup;
+        }
     }
 
     open_status = write_all(buffer->fd, slot_buf, buffer->slot_size);
@@ -796,12 +984,38 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
         goto cleanup;
     }
 
+    {
+        uint8_t state_written;
+        off_t off;
+        if (to_off_t(slot_offset, &off) != VANTAQ_EVIDENCE_RING_OPEN_OK ||
+            !vantaq_evidence_ring_u8_encode(&state_written,
+                                            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) ||
+            pwrite(buffer->fd, &state_written, 1U,
+                   off + (off_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET) != 1) {
+            set_error(buffer, "slot commit failed");
+            append_status = VANTAQ_EVIDENCE_RING_APPEND_WRITE_FAILED;
+            goto cleanup;
+        }
+    }
+
     next_write_slot = (assigned_slot + 1U) % (uint32_t)buffer->max_records;
 
-    vantaq_evidence_ring_le32_encode(tmp32, next_write_slot);
+    if (!vantaq_evidence_ring_le32_encode(tmp32, next_write_slot)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(header_state.raw + VANTAQ_EVIDENCE_RING_HEADER_WRITE_SLOT_OFFSET, tmp32, sizeof(tmp32));
 
-    vantaq_evidence_ring_le64_encode(tmp64, assigned_sequence + 1U);
+    if (assigned_sequence == UINT64_MAX) {
+        set_error(buffer, "sequence number overflow");
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
+
+    if (!vantaq_evidence_ring_le64_encode(tmp64, assigned_sequence + 1U)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
     memcpy(header_state.raw + VANTAQ_EVIDENCE_RING_HEADER_NEXT_SEQUENCE_OFFSET, tmp64,
            sizeof(tmp64));
 
@@ -848,10 +1062,11 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
     enum vantaq_evidence_ring_read_status read_status = VANTAQ_EVIDENCE_RING_READ_OK;
     enum vantaq_evidence_ring_open_status open_status = VANTAQ_EVIDENCE_RING_OPEN_OK;
     struct vantaq_ring_header_state header_state;
-    uint8_t *slot_buf      = NULL;
-    uint8_t *best_slot_buf = NULL;
-    bool found             = false;
-    uint64_t best_sequence = 0U;
+    uint8_t *slot_buf             = NULL;
+    uint8_t *best_slot_buf        = NULL;
+    bool found                    = false;
+    bool best_candidate_corrupted = false;
+    uint64_t best_sequence        = 0U;
     int lock_rc;
     bool lock_held = false;
     size_t slot_index;
@@ -874,13 +1089,21 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
 
+    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
+                                                     buffer->max_record_bytes,
+                                                     buffer->fsync_on_append, &config);
+    if (domain_status != RING_BUFFER_OK) {
+        return map_domain_status_to_read(domain_status);
+    }
+
     lock_rc = pthread_mutex_lock(&buffer->mutex);
     if (lock_rc != 0) {
+        vantaq_ring_buffer_config_destroy(config);
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
     lock_held = true;
 
-    open_status = read_validated_header(buffer, &header_state);
+    open_status = read_validated_header(buffer, NULL, &header_state);
     if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
         read_status = map_open_status_to_read(open_status);
         goto cleanup;
@@ -902,26 +1125,34 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
         struct vantaq_ring_slot_candidate candidate;
         size_t slot_offset;
 
-        slot_offset = vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes);
+        if (vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes, &slot_offset) !=
+            RING_BUFFER_OK) {
+            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
+            goto cleanup;
+        }
         if (slot_offset > buffer->file_size ||
             (buffer->file_size - slot_offset) < buffer->slot_size) {
             read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
             goto cleanup;
         }
 
-        open_status = read_at_exact(buffer->fd, (off_t)slot_offset, slot_buf, buffer->slot_size);
+        open_status = read_at_exact(buffer->fd, slot_offset, slot_buf, buffer->slot_size);
         if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
             read_status = map_open_status_to_read(open_status);
             goto cleanup;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] ==
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+        uint8_t state;
+        if (!vantaq_evidence_ring_u8_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                            &state)) {
             continue;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] !=
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
+        if (state == (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+            continue;
+        }
+
+        if (state != (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
             continue;
         }
 
@@ -929,15 +1160,17 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
             continue;
         }
 
-        if (!vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes)) {
-            continue;
-        }
-
+        bool is_corrupted = vantaq_evidence_ring_checksum_verify(slot_buf, buffer->slot_size,
+                                                                 buffer->max_record_bytes) !=
+                            VANTAQ_EVIDENCE_RING_CHECKSUM_OK;
         if (!found || candidate.record_sequence > best_sequence) {
-            memcpy(best_slot_buf, slot_buf, buffer->slot_size);
-            best_sequence  = candidate.record_sequence;
-            best_candidate = candidate;
-            found          = true;
+            if (!is_corrupted) {
+                memcpy(best_slot_buf, slot_buf, buffer->slot_size);
+            }
+            best_sequence            = candidate.record_sequence;
+            best_candidate           = candidate;
+            best_candidate_corrupted = is_corrupted;
+            found                    = true;
         }
     }
 
@@ -951,83 +1184,22 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
         goto cleanup;
     }
 
-    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
-                                                     buffer->max_record_bytes,
-                                                     buffer->fsync_on_append, &config);
-    if (domain_status != RING_BUFFER_OK) {
+    if (best_candidate_corrupted) {
+        domain_status = vantaq_ring_buffer_read_result_create_corrupted(
+            best_candidate.record_slot, best_candidate.record_sequence, &result);
         read_status = map_domain_status_to_read(domain_status);
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
+            *out_result = result;
+            result      = NULL;
+        }
         goto cleanup;
     }
 
-    {
-        uint64_t issued_at_raw;
-        uint32_t evidence_json_len;
-        char evidence_id[VANTAQ_EVIDENCE_ID_MAX];
-        char verifier_id[VANTAQ_VERIFIER_ID_MAX];
-        char evidence_hash[VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX];
-        char checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
-        char *evidence_json = NULL;
-
-        issued_at_raw = vantaq_evidence_ring_le64_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET);
-        evidence_json_len = vantaq_evidence_ring_le32_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET);
-
-        if (best_candidate.record_slot >= buffer->max_records ||
-            best_candidate.record_sequence < 1U || issued_at_raw == 0U ||
-            issued_at_raw > (uint64_t)INT64_MAX || evidence_json_len == 0U ||
-            evidence_json_len > buffer->max_record_bytes) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        if (!ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                                      VANTAQ_EVIDENCE_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                                      VANTAQ_VERIFIER_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                                      VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                                      VANTAQ_RING_BUFFER_CHECKSUM_MAX)) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        evidence_json = malloc((size_t)evidence_json_len + 1U);
-        if (evidence_json == NULL) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
-            goto cleanup;
-        }
-
-        memcpy(evidence_json, best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET,
-               evidence_json_len);
-        evidence_json[evidence_json_len] = '\0';
-
-        ring_copy_text_field(evidence_id, sizeof(evidence_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                             VANTAQ_EVIDENCE_ID_MAX);
-        ring_copy_text_field(verifier_id, sizeof(verifier_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                             VANTAQ_VERIFIER_ID_MAX);
-        ring_copy_text_field(evidence_hash, sizeof(evidence_hash),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                             VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX);
-        ring_copy_text_field(checksum, sizeof(checksum),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                             VANTAQ_RING_BUFFER_CHECKSUM_MAX);
-
-        domain_status = vantaq_ring_buffer_record_create(
-            config, best_candidate.record_slot, best_candidate.record_sequence, evidence_id,
-            verifier_id, (int64_t)issued_at_raw, evidence_json, evidence_hash, checksum, &record);
-        vantaq_explicit_bzero(evidence_json, (size_t)evidence_json_len + 1U);
-        free(evidence_json);
-        if (domain_status != RING_BUFFER_OK) {
-            read_status = map_domain_status_to_read(domain_status);
-            goto cleanup;
-        }
+    domain_status =
+        reconstruct_record_from_slot(buffer, config, best_slot_buf, &best_candidate, &record);
+    if (domain_status != RING_BUFFER_OK) {
+        read_status = map_domain_status_to_read(domain_status);
+        goto cleanup;
     }
 
     domain_status = vantaq_ring_buffer_read_result_create_found(record, &result);
@@ -1097,13 +1269,21 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
 
+    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
+                                                     buffer->max_record_bytes,
+                                                     buffer->fsync_on_append, &config);
+    if (domain_status != RING_BUFFER_OK) {
+        return map_domain_status_to_read(domain_status);
+    }
+
     lock_rc = pthread_mutex_lock(&buffer->mutex);
     if (lock_rc != 0) {
+        vantaq_ring_buffer_config_destroy(config);
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
     lock_held = true;
 
-    open_status = read_validated_header(buffer, &header_state);
+    open_status = read_validated_header(buffer, NULL, &header_state);
     if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
         read_status = map_open_status_to_read(open_status);
         goto cleanup;
@@ -1125,26 +1305,34 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
         struct vantaq_ring_slot_candidate candidate;
         size_t slot_offset;
 
-        slot_offset = vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes);
+        if (vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes, &slot_offset) !=
+            RING_BUFFER_OK) {
+            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
+            goto cleanup;
+        }
         if (slot_offset > buffer->file_size ||
             (buffer->file_size - slot_offset) < buffer->slot_size) {
             read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
             goto cleanup;
         }
 
-        open_status = read_at_exact(buffer->fd, (off_t)slot_offset, slot_buf, buffer->slot_size);
+        open_status = read_at_exact(buffer->fd, slot_offset, slot_buf, buffer->slot_size);
         if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
             read_status = map_open_status_to_read(open_status);
             goto cleanup;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] ==
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+        uint8_t state;
+        if (!vantaq_evidence_ring_u8_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                            &state)) {
             continue;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] !=
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
+        if (state == (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+            continue;
+        }
+
+        if (state != (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
             continue;
         }
 
@@ -1159,11 +1347,12 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
 
         if (!found || candidate.record_sequence > best_sequence) {
             memcpy(best_slot_buf, slot_buf, buffer->slot_size);
-            best_sequence  = candidate.record_sequence;
-            best_candidate = candidate;
-            best_candidate_corrupted =
-                !vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes);
-            found = true;
+            best_sequence            = candidate.record_sequence;
+            best_candidate           = candidate;
+            best_candidate_corrupted = vantaq_evidence_ring_checksum_verify(
+                                           slot_buf, buffer->slot_size, buffer->max_record_bytes) !=
+                                       VANTAQ_EVIDENCE_RING_CHECKSUM_OK;
+            found                    = true;
         }
     }
 
@@ -1188,83 +1377,11 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
         goto cleanup;
     }
 
-    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
-                                                     buffer->max_record_bytes,
-                                                     buffer->fsync_on_append, &config);
+    domain_status =
+        reconstruct_record_from_slot(buffer, config, best_slot_buf, &best_candidate, &record);
     if (domain_status != RING_BUFFER_OK) {
         read_status = map_domain_status_to_read(domain_status);
         goto cleanup;
-    }
-
-    {
-        uint64_t issued_at_raw;
-        uint32_t evidence_json_len;
-        char record_evidence_id[VANTAQ_EVIDENCE_ID_MAX];
-        char verifier_id[VANTAQ_VERIFIER_ID_MAX];
-        char evidence_hash[VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX];
-        char checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
-        char *evidence_json = NULL;
-
-        issued_at_raw = vantaq_evidence_ring_le64_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET);
-        evidence_json_len = vantaq_evidence_ring_le32_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET);
-
-        if (best_candidate.record_slot >= buffer->max_records ||
-            best_candidate.record_sequence < 1U || issued_at_raw == 0U ||
-            issued_at_raw > (uint64_t)INT64_MAX || evidence_json_len == 0U ||
-            evidence_json_len > buffer->max_record_bytes) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        if (!ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                                      VANTAQ_EVIDENCE_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                                      VANTAQ_VERIFIER_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                                      VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                                      VANTAQ_RING_BUFFER_CHECKSUM_MAX)) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        evidence_json = malloc((size_t)evidence_json_len + 1U);
-        if (evidence_json == NULL) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
-            goto cleanup;
-        }
-
-        memcpy(evidence_json, best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET,
-               evidence_json_len);
-        evidence_json[evidence_json_len] = '\0';
-
-        ring_copy_text_field(record_evidence_id, sizeof(record_evidence_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                             VANTAQ_EVIDENCE_ID_MAX);
-        ring_copy_text_field(verifier_id, sizeof(verifier_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                             VANTAQ_VERIFIER_ID_MAX);
-        ring_copy_text_field(evidence_hash, sizeof(evidence_hash),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                             VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX);
-        ring_copy_text_field(checksum, sizeof(checksum),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                             VANTAQ_RING_BUFFER_CHECKSUM_MAX);
-
-        domain_status = vantaq_ring_buffer_record_create(
-            config, best_candidate.record_slot, best_candidate.record_sequence, record_evidence_id,
-            verifier_id, (int64_t)issued_at_raw, evidence_json, evidence_hash, checksum, &record);
-        vantaq_explicit_bzero(evidence_json, (size_t)evidence_json_len + 1U);
-        free(evidence_json);
-        if (domain_status != RING_BUFFER_OK) {
-            read_status = map_domain_status_to_read(domain_status);
-            goto cleanup;
-        }
     }
 
     domain_status = vantaq_ring_buffer_read_result_create_found(record, &result);
@@ -1318,6 +1435,7 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
     struct vantaq_ring_buffer_record *record         = NULL;
     struct vantaq_ring_buffer_read_result *result    = NULL;
     struct vantaq_ring_slot_candidate best_candidate = {0};
+    bool best_candidate_corrupted                    = false;
     ring_buffer_err_t domain_status;
 
     if (out_result == NULL) {
@@ -1333,13 +1451,21 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
 
+    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
+                                                     buffer->max_record_bytes,
+                                                     buffer->fsync_on_append, &config);
+    if (domain_status != RING_BUFFER_OK) {
+        return map_domain_status_to_read(domain_status);
+    }
+
     lock_rc = pthread_mutex_lock(&buffer->mutex);
     if (lock_rc != 0) {
+        vantaq_ring_buffer_config_destroy(config);
         return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
     }
     lock_held = true;
 
-    open_status = read_validated_header(buffer, &header_state);
+    open_status = read_validated_header(buffer, NULL, &header_state);
     if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
         read_status = map_open_status_to_read(open_status);
         goto cleanup;
@@ -1361,26 +1487,34 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
         struct vantaq_ring_slot_candidate candidate;
         size_t slot_offset;
 
-        slot_offset = vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes);
+        if (vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes, &slot_offset) !=
+            RING_BUFFER_OK) {
+            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
+            goto cleanup;
+        }
         if (slot_offset > buffer->file_size ||
             (buffer->file_size - slot_offset) < buffer->slot_size) {
             read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
             goto cleanup;
         }
 
-        open_status = read_at_exact(buffer->fd, (off_t)slot_offset, slot_buf, buffer->slot_size);
+        open_status = read_at_exact(buffer->fd, slot_offset, slot_buf, buffer->slot_size);
         if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
             read_status = map_open_status_to_read(open_status);
             goto cleanup;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] ==
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+        uint8_t state;
+        if (!vantaq_evidence_ring_u8_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                            &state)) {
             continue;
         }
 
-        if (slot_buf[VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET] !=
-            (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
+        if (state == (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_EMPTY) {
+            continue;
+        }
+
+        if (state != (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
             continue;
         }
 
@@ -1388,20 +1522,22 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
             continue;
         }
 
-        if (!vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes)) {
-            continue;
-        }
-
+        bool is_corrupted = vantaq_evidence_ring_checksum_verify(slot_buf, buffer->slot_size,
+                                                                 buffer->max_record_bytes) !=
+                            VANTAQ_EVIDENCE_RING_CHECKSUM_OK;
         if (strcmp((const char *)(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET),
                    verifier_id) != 0) {
             continue;
         }
 
         if (!found || candidate.record_sequence > best_sequence) {
-            memcpy(best_slot_buf, slot_buf, buffer->slot_size);
-            best_sequence  = candidate.record_sequence;
-            best_candidate = candidate;
-            found          = true;
+            if (!is_corrupted) {
+                memcpy(best_slot_buf, slot_buf, buffer->slot_size);
+            }
+            best_sequence            = candidate.record_sequence;
+            best_candidate           = candidate;
+            best_candidate_corrupted = is_corrupted;
+            found                    = true;
         }
     }
 
@@ -1415,84 +1551,22 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
         goto cleanup;
     }
 
-    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
-                                                     buffer->max_record_bytes,
-                                                     buffer->fsync_on_append, &config);
-    if (domain_status != RING_BUFFER_OK) {
+    if (best_candidate_corrupted) {
+        domain_status = vantaq_ring_buffer_read_result_create_corrupted(
+            best_candidate.record_slot, best_candidate.record_sequence, &result);
         read_status = map_domain_status_to_read(domain_status);
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
+            *out_result = result;
+            result      = NULL;
+        }
         goto cleanup;
     }
 
-    {
-        uint64_t issued_at_raw;
-        uint32_t evidence_json_len;
-        char record_evidence_id[VANTAQ_EVIDENCE_ID_MAX];
-        char record_verifier_id[VANTAQ_VERIFIER_ID_MAX];
-        char evidence_hash[VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX];
-        char checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
-        char *evidence_json = NULL;
-
-        issued_at_raw = vantaq_evidence_ring_le64_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_ISSUED_AT_UNIX_OFFSET);
-        evidence_json_len = vantaq_evidence_ring_le32_decode(
-            best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_LEN_OFFSET);
-
-        if (best_candidate.record_slot >= buffer->max_records ||
-            best_candidate.record_sequence < 1U || issued_at_raw == 0U ||
-            issued_at_raw > (uint64_t)INT64_MAX || evidence_json_len == 0U ||
-            evidence_json_len > buffer->max_record_bytes) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        if (!ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                                      VANTAQ_EVIDENCE_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                                      VANTAQ_VERIFIER_ID_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf +
-                                          VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                                      VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX) ||
-            !ring_text_field_is_valid(best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                                      VANTAQ_RING_BUFFER_CHECKSUM_MAX)) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
-            goto cleanup;
-        }
-
-        evidence_json = malloc((size_t)evidence_json_len + 1U);
-        if (evidence_json == NULL) {
-            read_status = VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
-            goto cleanup;
-        }
-
-        memcpy(evidence_json, best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET,
-               evidence_json_len);
-        evidence_json[evidence_json_len] = '\0';
-
-        ring_copy_text_field(record_evidence_id, sizeof(record_evidence_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET,
-                             VANTAQ_EVIDENCE_ID_MAX);
-        ring_copy_text_field(record_verifier_id, sizeof(record_verifier_id),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET,
-                             VANTAQ_VERIFIER_ID_MAX);
-        ring_copy_text_field(evidence_hash, sizeof(evidence_hash),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
-                             VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX);
-        ring_copy_text_field(checksum, sizeof(checksum),
-                             best_slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                             VANTAQ_RING_BUFFER_CHECKSUM_MAX);
-
-        domain_status = vantaq_ring_buffer_record_create(
-            config, best_candidate.record_slot, best_candidate.record_sequence, record_evidence_id,
-            record_verifier_id, (int64_t)issued_at_raw, evidence_json, evidence_hash, checksum,
-            &record);
-        vantaq_explicit_bzero(evidence_json, (size_t)evidence_json_len + 1U);
-        free(evidence_json);
-        if (domain_status != RING_BUFFER_OK) {
-            read_status = map_domain_status_to_read(domain_status);
-            goto cleanup;
-        }
+    domain_status =
+        reconstruct_record_from_slot(buffer, config, best_slot_buf, &best_candidate, &record);
+    if (domain_status != RING_BUFFER_OK) {
+        read_status = map_domain_status_to_read(domain_status);
+        goto cleanup;
     }
 
     domain_status = vantaq_ring_buffer_read_result_create_found(record, &result);
@@ -1529,14 +1603,204 @@ cleanup:
     return read_status;
 }
 
-int vantaq_evidence_ring_buffer_fd(const struct vantaq_evidence_ring_buffer *buffer) {
-    return buffer ? buffer->fd : -1;
+enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_evidence_id_for_verifier(
+    struct vantaq_evidence_ring_buffer *buffer, const char *evidence_id, const char *verifier_id,
+    struct vantaq_ring_buffer_read_result **out_result) {
+    enum vantaq_evidence_ring_read_status read_status = VANTAQ_EVIDENCE_RING_READ_OK;
+    enum vantaq_evidence_ring_open_status open_status = VANTAQ_EVIDENCE_RING_OPEN_OK;
+    struct vantaq_ring_header_state header_state;
+    uint8_t *slot_buf             = NULL;
+    uint8_t *best_slot_buf        = NULL;
+    bool found                    = false;
+    bool best_candidate_corrupted = false;
+    uint64_t best_sequence        = 0U;
+    int lock_rc;
+    bool lock_held = false;
+    size_t slot_index;
+    struct vantaq_ring_buffer_config *config         = NULL;
+    struct vantaq_ring_buffer_record *record         = NULL;
+    struct vantaq_ring_buffer_read_result *result    = NULL;
+    struct vantaq_ring_slot_candidate best_candidate = {0};
+    ring_buffer_err_t domain_status;
+
+    if (out_result == NULL) {
+        return VANTAQ_EVIDENCE_RING_READ_INVALID_ARGUMENT;
+    }
+    *out_result = NULL;
+
+    if (buffer == NULL || !input_text_is_valid(evidence_id, VANTAQ_EVIDENCE_ID_MAX) ||
+        !input_text_is_valid(verifier_id, VANTAQ_VERIFIER_ID_MAX)) {
+        return VANTAQ_EVIDENCE_RING_READ_INVALID_ARGUMENT;
+    }
+
+    if (!buffer->mutex_initialized) {
+        return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
+    }
+
+    domain_status = vantaq_ring_buffer_config_create(buffer->path, buffer->max_records,
+                                                     buffer->max_record_bytes,
+                                                     buffer->fsync_on_append, &config);
+    if (domain_status != RING_BUFFER_OK) {
+        return map_domain_status_to_read(domain_status);
+    }
+
+    lock_rc = pthread_mutex_lock(&buffer->mutex);
+    if (lock_rc != 0) {
+        vantaq_ring_buffer_config_destroy(config);
+        return VANTAQ_EVIDENCE_RING_READ_IO_ERROR;
+    }
+    lock_held = true;
+
+    open_status = read_validated_header(buffer, NULL, &header_state);
+    if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+        read_status = map_open_status_to_read(open_status);
+        goto cleanup;
+    }
+
+    slot_buf = calloc(1U, buffer->slot_size);
+    if (slot_buf == NULL) {
+        read_status = VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    best_slot_buf = calloc(1U, buffer->slot_size);
+    if (best_slot_buf == NULL) {
+        read_status = VANTAQ_EVIDENCE_RING_READ_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    for (slot_index = 0U; slot_index < buffer->max_records; slot_index++) {
+        struct vantaq_ring_slot_candidate candidate;
+        size_t slot_offset;
+
+        if (vantaq_evidence_ring_slot_offset(slot_index, buffer->max_record_bytes, &slot_offset) !=
+            RING_BUFFER_OK) {
+            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
+            goto cleanup;
+        }
+        if (slot_offset > buffer->file_size ||
+            (buffer->file_size - slot_offset) < buffer->slot_size) {
+            read_status = VANTAQ_EVIDENCE_RING_READ_INVALID_HEADER;
+            goto cleanup;
+        }
+
+        open_status = read_at_exact(buffer->fd, slot_offset, slot_buf, buffer->slot_size);
+        if (open_status != VANTAQ_EVIDENCE_RING_OPEN_OK) {
+            read_status = map_open_status_to_read(open_status);
+            goto cleanup;
+        }
+
+        {
+            uint8_t state;
+            if (!vantaq_evidence_ring_u8_decode(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_STATE_OFFSET,
+                                                &state)) {
+                continue;
+            }
+            if (state != (uint8_t)VANTAQ_EVIDENCE_RING_RECORD_STATE_WRITTEN) {
+                continue;
+            }
+        }
+
+        if (!parse_slot_candidate(buffer, slot_index, slot_buf, &candidate)) {
+            continue;
+        }
+
+        if (strcmp((const char *)(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_ID_OFFSET),
+                   evidence_id) != 0) {
+            continue;
+        }
+        if (strcmp((const char *)(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_VERIFIER_ID_OFFSET),
+                   verifier_id) != 0) {
+            continue;
+        }
+
+        if (!found || candidate.record_sequence > best_sequence) {
+            memcpy(best_slot_buf, slot_buf, buffer->slot_size);
+            best_sequence            = candidate.record_sequence;
+            best_candidate           = candidate;
+            best_candidate_corrupted = vantaq_evidence_ring_checksum_verify(
+                                           slot_buf, buffer->slot_size, buffer->max_record_bytes) !=
+                                       VANTAQ_EVIDENCE_RING_CHECKSUM_OK;
+            found                    = true;
+        }
+    }
+
+    if (!found) {
+        domain_status = vantaq_ring_buffer_read_result_create_not_found(&result);
+        read_status   = map_domain_status_to_read(domain_status);
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
+            *out_result = result;
+            result      = NULL;
+        }
+        goto cleanup;
+    }
+
+    if (best_candidate_corrupted) {
+        domain_status = vantaq_ring_buffer_read_result_create_corrupted(
+            best_candidate.record_slot, best_candidate.record_sequence, &result);
+        read_status = map_domain_status_to_read(domain_status);
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
+            *out_result = result;
+            result      = NULL;
+        }
+        goto cleanup;
+    }
+
+    domain_status =
+        reconstruct_record_from_slot(buffer, config, best_slot_buf, &best_candidate, &record);
+    if (domain_status != RING_BUFFER_OK) {
+        read_status = map_domain_status_to_read(domain_status);
+        goto cleanup;
+    }
+
+    domain_status = vantaq_ring_buffer_read_result_create_found(record, &result);
+    if (domain_status != RING_BUFFER_OK) {
+        read_status = map_domain_status_to_read(domain_status);
+        goto cleanup;
+    }
+
+    *out_result = result;
+    result      = NULL;
+
+cleanup:
+    if (result != NULL) {
+        vantaq_ring_buffer_read_result_destroy(result);
+    }
+    if (record != NULL) {
+        vantaq_ring_buffer_record_destroy(record);
+    }
+    if (config != NULL) {
+        vantaq_ring_buffer_config_destroy(config);
+    }
+    if (best_slot_buf != NULL) {
+        vantaq_explicit_bzero(best_slot_buf, buffer ? buffer->slot_size : 0U);
+        free(best_slot_buf);
+    }
+    if (slot_buf != NULL) {
+        vantaq_explicit_bzero(slot_buf, buffer ? buffer->slot_size : 0U);
+        free(slot_buf);
+    }
+    if (lock_held) {
+        (void)pthread_mutex_unlock(&buffer->mutex);
+    }
+
+    return read_status;
 }
 
-const char *vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer) {
-    static const char k_empty[] = "";
+void vantaq_evidence_ring_buffer_path(const struct vantaq_evidence_ring_buffer *buffer, char *out,
+                                      size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
 
-    return buffer ? buffer->path : k_empty;
+    if (buffer == NULL) {
+        return;
+    }
+
+    (void)pthread_mutex_lock((pthread_mutex_t *)&buffer->mutex);
+    (void)strlcpy(out, buffer->path, out_size);
+    (void)pthread_mutex_unlock((pthread_mutex_t *)&buffer->mutex);
 }
 
 size_t vantaq_evidence_ring_buffer_max_records(const struct vantaq_evidence_ring_buffer *buffer) {
@@ -1557,9 +1821,18 @@ size_t vantaq_evidence_ring_buffer_file_size(const struct vantaq_evidence_ring_b
     return buffer ? buffer->file_size : 0U;
 }
 
-const char *
-vantaq_evidence_ring_buffer_last_error(const struct vantaq_evidence_ring_buffer *buffer) {
-    static const char k_empty[] = "";
+void vantaq_evidence_ring_buffer_last_error(const struct vantaq_evidence_ring_buffer *buffer,
+                                            char *out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
 
-    return buffer ? buffer->last_error : k_empty;
+    if (buffer == NULL) {
+        return;
+    }
+
+    (void)pthread_mutex_lock((pthread_mutex_t *)&buffer->mutex);
+    (void)strlcpy(out, buffer->last_error, out_size);
+    (void)pthread_mutex_unlock((pthread_mutex_t *)&buffer->mutex);
 }
