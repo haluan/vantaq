@@ -3,6 +3,7 @@
 
 #include "application/attestation_challenge/create_challenge.h"
 #include "application/evidence/create_evidence.h"
+#include "application/evidence/get_latest_evidence.h"
 #include "application/evidence/latest_evidence_store.h"
 #include "domain/ring_buffer/ring_buffer.h"
 #include "evidence_ring_buffer.h"
@@ -551,97 +552,45 @@ cleanup:
 int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
                                       const struct vantaq_http_health_context *ctx,
                                       const struct vantaq_http_request_context *req_ctx) {
-    if (!connection || !ctx || !req_ctx)
-        return -1;
-
-    if (ctx->latest_evidence_store == NULL) {
-        return vantaq_http_send_status_response(connection, 501);
-    }
-
-    struct vantaq_evidence *evidence = NULL;
-    char *signature_b64              = NULL;
-    char json[VANTAQ_EVIDENCE_JSON_BUF_SIZE];
     char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
-    char esc_ev_id[VANTAQ_EVIDENCE_ID_MAX * 2];
-    char esc_dev_id[VANTAQ_DEVICE_ID_MAX * 2];
-    char esc_ver_id[VANTAQ_VERIFIER_ID_MAX * 2];
-    char esc_ch_id[VANTAQ_CHALLENGE_ID_MAX * 2];
-    char esc_nonce[VANTAQ_NONCE_MAX * 2];
-    char esc_purpose[VANTAQ_PURPOSE_MAX * 2];
-    char esc_sig_alg[VANTAQ_SIGNATURE_ALG_MAX * 2];
-    char esc_sig[VANTAQ_SIGNATURE_MAX * 2];
-    int result = -1;
+    char *evidence_json = NULL;
+    int response_n;
+    enum vantaq_app_get_latest_evidence_status status;
 
-    vantaq_latest_evidence_err_t err = vantaq_latest_evidence_store_get(
-        ctx->latest_evidence_store, req_ctx->verifier_auth.identity.id, &evidence, &signature_b64);
-
-    if (err != VANTAQ_LATEST_EVIDENCE_OK) {
-        if (err == VANTAQ_LATEST_EVIDENCE_ERR_NOT_FOUND) {
-            return vantaq_http_send_status_response(connection, 404);
-        }
-        return vantaq_http_send_status_response(connection, 500);
+    if (!connection || !ctx || !req_ctx) {
+        return -1;
     }
 
-    // JSON escape strings
-    if (vantaq_json_escape_str(vantaq_evidence_get_evidence_id(evidence), esc_ev_id,
-                               sizeof(esc_ev_id)) == 0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_device_id(evidence), esc_dev_id,
-                               sizeof(esc_dev_id)) == 0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_verifier_id(evidence), esc_ver_id,
-                               sizeof(esc_ver_id)) == 0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_challenge_id(evidence), esc_ch_id,
-                               sizeof(esc_ch_id)) == 0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_nonce(evidence), esc_nonce, sizeof(esc_nonce)) ==
-            0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_purpose(evidence), esc_purpose,
-                               sizeof(esc_purpose)) == 0 ||
-        vantaq_json_escape_str(vantaq_evidence_get_signature_alg(evidence), esc_sig_alg,
-                               sizeof(esc_sig_alg)) == 0 ||
-        vantaq_json_escape_str(signature_b64, esc_sig, sizeof(esc_sig)) == 0) {
-        result = vantaq_http_send_status_response(connection, 500);
-        goto cleanup;
+    if (ctx->evidence_ring_buffer == NULL) {
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
     }
 
-    const char *claims_json = vantaq_evidence_get_claims(evidence);
-    if (claims_json == NULL) {
-        result = vantaq_http_send_status_response(connection, 500);
-        goto cleanup;
+    status = vantaq_app_get_latest_evidence(ctx->evidence_ring_buffer,
+                                            req_ctx->verifier_auth.identity.id, &evidence_json);
+    if (status == VANTAQ_APP_GET_LATEST_EVIDENCE_NOT_FOUND) {
+        return vantaq_http_send_status_response(connection, 404);
+    }
+    if (status != VANTAQ_APP_GET_LATEST_EVIDENCE_OK || evidence_json == NULL) {
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
     }
 
-    int n = snprintf(json, sizeof(json),
-                     "{\"evidence_id\":\"%s\",\"device_id\":\"%s\",\"verifier_id\":\"%s\","
-                     "\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"purpose\":\"%s\","
-                     "\"timestamp\":%ld,\"claims\":%s,\"signature_algorithm\":\"%s\","
-                     "\"signature\":\"%s\"}\n",
-                     esc_ev_id, esc_dev_id, esc_ver_id, esc_ch_id, esc_nonce, esc_purpose,
-                     (long)vantaq_evidence_get_issued_at_unix(evidence), claims_json, esc_sig_alg,
-                     esc_sig);
-
-    if (n < 0 || (size_t)n >= sizeof(json)) {
-        result = vantaq_http_send_status_response(connection, 500);
-        goto cleanup;
+    response_n = snprintf(response, sizeof(response),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "%s",
+                          strlen(evidence_json), evidence_json);
+    if (response_n < 0 || (size_t)response_n >= sizeof(response)) {
+        free(evidence_json);
+        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
     }
 
-    n = snprintf(response, sizeof(response),
-                 "HTTP/1.1 200 OK\r\n"
-                 "Content-Type: application/json\r\n"
-                 "Content-Length: %zu\r\n"
-                 "Connection: close\r\n"
-                 "\r\n"
-                 "%s",
-                 (size_t)n, json);
-
-    if (n < 0 || (size_t)n >= sizeof(response)) {
-        result = vantaq_http_send_status_response(connection, 500);
-        goto cleanup;
+    if (vantaq_http_write_all(connection, response, (size_t)response_n) != 0) {
+        free(evidence_json);
+        return -1;
     }
-
-    result = vantaq_http_write_all(connection, response, (size_t)n);
-
-cleanup:
-    if (evidence != NULL) {
-        vantaq_evidence_destroy(evidence);
-    }
-    free(signature_b64);
-    return result;
+    free(evidence_json);
+    return 0;
 }

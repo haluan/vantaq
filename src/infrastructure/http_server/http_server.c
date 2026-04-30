@@ -614,6 +614,15 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         }
         return 405;
     }
+    if (strcmp(path, "/v1/attestation/evidence/latest") == 0) {
+        if (strcmp(method, "GET") == 0) {
+            if (is_protected != NULL) {
+                *is_protected = true;
+            }
+            return 200;
+        }
+        return 405;
+    }
 
     return 404;
 }
@@ -886,7 +895,8 @@ static void handle_client(struct vantaq_http_connection *connection,
             rc = send_post_challenge_response(connection, health_ctx, &request_ctx, req_buf);
         } else if (status_code == 200 && strcmp(path, "/v1/attestation/evidence") == 0) {
             rc = send_post_evidence_response(connection, health_ctx, &request_ctx, req_buf);
-        } else if (status_code == 200 && strcmp(path, "/v1/attestation/latest-evidence") == 0) {
+        } else if (status_code == 200 && (strcmp(path, "/v1/attestation/latest-evidence") == 0 ||
+                                          strcmp(path, "/v1/attestation/evidence/latest") == 0)) {
             rc = send_get_latest_evidence_response(connection, health_ctx, &request_ctx);
         } else {
             rc = send_health_response(connection, health_ctx);

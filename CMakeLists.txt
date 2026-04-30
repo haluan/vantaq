@@ -30,6 +30,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/ring_buffer_file/evidence_ring_buffer.c
   src/application/attestation_challenge/create_challenge.c
   src/application/evidence/create_evidence.c
+  src/application/evidence/get_latest_evidence.c
   src/application/evidence/latest_evidence_store.c
   src/infrastructure/http_server/routes_attestation.c
   src/infrastructure/http_server/json_utils.c
@@ -238,6 +239,14 @@ if(VANTAQ_BUILD_TESTS)
   target_link_libraries(test_evidence_stored_after_creation PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME integration_evidence_stored_after_creation COMMAND test_evidence_stored_after_creation)
   set_tests_properties(integration_evidence_stored_after_creation PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+
+  add_executable(test_get_latest_evidence_api tests/integration/test_get_latest_evidence_api.c ${VANTAQ_TEST_SERVER_HARNESS_SRC})
+  target_include_directories(test_get_latest_evidence_api PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_get_latest_evidence_api PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME integration_get_latest_evidence_api COMMAND test_get_latest_evidence_api)
+  set_tests_properties(integration_get_latest_evidence_api PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
 
