@@ -27,6 +27,7 @@ set(VANTAQ_COMMON_SOURCES
   src/infrastructure/crypto/nonce_random.c
   src/infrastructure/memory/challenge_store_memory.c
   src/infrastructure/ring_buffer_file/evidence_ring_format.c
+  src/infrastructure/ring_buffer_file/evidence_ring_checksum.c
   src/infrastructure/ring_buffer_file/evidence_ring_buffer.c
   src/application/attestation_challenge/create_challenge.c
   src/application/evidence/create_evidence.c
@@ -332,6 +333,11 @@ if(VANTAQ_BUILD_TESTS)
   target_include_directories(test_ring_buffer_read_by_id PRIVATE src/infrastructure/ring_buffer_file)
   target_link_libraries(test_ring_buffer_read_by_id PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
   add_test(NAME unit_ring_buffer_read_by_id COMMAND test_ring_buffer_read_by_id)
+
+  add_executable(test_ring_buffer_checksum tests/unit/test_ring_buffer_checksum.c)
+  target_include_directories(test_ring_buffer_checksum PRIVATE src/infrastructure/ring_buffer_file)
+  target_link_libraries(test_ring_buffer_checksum PRIVATE vantaq_core ${VANTAQ_CMOCKA_TARGET})
+  add_test(NAME unit_ring_buffer_checksum COMMAND test_ring_buffer_checksum)
 endif()
 
 option(VANTAQ_BUILD_TOOLS "Build CLI tools" ON)

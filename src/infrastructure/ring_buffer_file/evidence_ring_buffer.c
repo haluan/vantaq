@@ -3,6 +3,7 @@
 
 #include "evidence_ring_buffer.h"
 
+#include "evidence_ring_checksum.h"
 #include "evidence_ring_format.h"
 #include "infrastructure/memory/zero_struct.h"
 
@@ -691,7 +692,7 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     const char *verifier_id;
     const char *evidence_json;
     const char *evidence_hash;
-    const char *checksum;
+    char computed_checksum[VANTAQ_RING_BUFFER_CHECKSUM_MAX];
     int64_t issued_at_unix;
     size_t evidence_json_size;
     size_t slot_offset;
@@ -713,13 +714,12 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
     verifier_id        = vantaq_ring_buffer_record_get_verifier_id(record);
     evidence_json      = vantaq_ring_buffer_record_get_evidence_json(record);
     evidence_hash      = vantaq_ring_buffer_record_get_evidence_hash(record);
-    checksum           = vantaq_ring_buffer_record_get_checksum(record);
     issued_at_unix     = vantaq_ring_buffer_record_get_issued_at_unix(record);
     evidence_json_size = vantaq_ring_buffer_record_get_evidence_json_size(record);
 
     if (evidence_id[0] == '\0' || verifier_id[0] == '\0' || evidence_json[0] == '\0' ||
-        evidence_hash[0] == '\0' || checksum[0] == '\0' || issued_at_unix <= 0 ||
-        evidence_json_size == 0U || evidence_json_size > buffer->max_record_bytes) {
+        evidence_hash[0] == '\0' || issued_at_unix <= 0 || evidence_json_size == 0U ||
+        evidence_json_size > buffer->max_record_bytes) {
         return VANTAQ_EVIDENCE_RING_APPEND_INVALID_ARGUMENT;
     }
 
@@ -771,11 +771,17 @@ vantaq_evidence_ring_buffer_append(struct vantaq_evidence_ring_buffer *buffer,
                        VANTAQ_VERIFIER_ID_MAX, verifier_id);
     copy_bounded_field(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_HASH_OFFSET,
                        VANTAQ_RING_BUFFER_EVIDENCE_HASH_MAX, evidence_hash);
-    copy_bounded_field(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
-                       VANTAQ_RING_BUFFER_CHECKSUM_MAX, checksum);
-
     memcpy(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_EVIDENCE_JSON_OFFSET, evidence_json,
            evidence_json_size);
+
+    VANTAQ_ZERO_STRUCT(computed_checksum);
+    if (!vantaq_evidence_ring_checksum_compute(slot_buf, buffer->max_record_bytes,
+                                               computed_checksum)) {
+        append_status = VANTAQ_EVIDENCE_RING_APPEND_IO_ERROR;
+        goto cleanup;
+    }
+    copy_bounded_field(slot_buf + VANTAQ_EVIDENCE_RING_RECORD_CHECKSUM_OFFSET,
+                       VANTAQ_RING_BUFFER_CHECKSUM_MAX, computed_checksum);
 
     if (lseek(buffer->fd, (off_t)slot_offset, SEEK_SET) < 0) {
         set_error(buffer, "slot seek failed: %s", strerror(errno));
@@ -923,6 +929,10 @@ vantaq_evidence_ring_buffer_read_latest(struct vantaq_evidence_ring_buffer *buff
             continue;
         }
 
+        if (!vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes)) {
+            continue;
+        }
+
         if (!found || candidate.record_sequence > best_sequence) {
             memcpy(best_slot_buf, slot_buf, buffer->slot_size);
             best_sequence  = candidate.record_sequence;
@@ -1060,10 +1070,11 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
     enum vantaq_evidence_ring_read_status read_status = VANTAQ_EVIDENCE_RING_READ_OK;
     enum vantaq_evidence_ring_open_status open_status = VANTAQ_EVIDENCE_RING_OPEN_OK;
     struct vantaq_ring_header_state header_state;
-    uint8_t *slot_buf      = NULL;
-    uint8_t *best_slot_buf = NULL;
-    bool found             = false;
-    uint64_t best_sequence = 0U;
+    uint8_t *slot_buf             = NULL;
+    uint8_t *best_slot_buf        = NULL;
+    bool found                    = false;
+    bool best_candidate_corrupted = false;
+    uint64_t best_sequence        = 0U;
     int lock_rc;
     bool lock_held = false;
     size_t slot_index;
@@ -1150,13 +1161,26 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_by_eviden
             memcpy(best_slot_buf, slot_buf, buffer->slot_size);
             best_sequence  = candidate.record_sequence;
             best_candidate = candidate;
-            found          = true;
+            best_candidate_corrupted =
+                !vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes);
+            found = true;
         }
     }
 
     if (!found) {
         domain_status = vantaq_ring_buffer_read_result_create_not_found(&result);
         read_status   = map_domain_status_to_read(domain_status);
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
+            *out_result = result;
+            result      = NULL;
+        }
+        goto cleanup;
+    }
+
+    if (best_candidate_corrupted) {
+        domain_status = vantaq_ring_buffer_read_result_create_corrupted(
+            best_candidate.record_slot, best_candidate.record_sequence, &result);
+        read_status = map_domain_status_to_read(domain_status);
         if (read_status == VANTAQ_EVIDENCE_RING_READ_OK) {
             *out_result = result;
             result      = NULL;
@@ -1361,6 +1385,10 @@ enum vantaq_evidence_ring_read_status vantaq_evidence_ring_buffer_read_latest_by
         }
 
         if (!parse_slot_candidate(buffer, slot_index, slot_buf, &candidate)) {
+            continue;
+        }
+
+        if (!vantaq_evidence_ring_checksum_verify(slot_buf, buffer->max_record_bytes)) {
             continue;
         }
 
