@@ -54,6 +54,7 @@ add_library(vantaq_core STATIC ${VANTAQ_COMMON_SOURCES})
 target_include_directories(vantaq_core
   PUBLIC include
   PRIVATE src/infrastructure/ring_buffer_file
+  PRIVATE src/infrastructure/http_server
 )
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)

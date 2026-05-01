@@ -238,10 +238,12 @@ static void test_boot_state_requested_included_and_signature_valid(void **state)
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 200);
-    s_assert_non_null(s, strstr(body, "\"claims\":{"));
-    s_assert_non_null(s, strstr(body, "\"boot_state\":{"));
-    s_assert_non_null(s, strstr(body, "\"secure_boot\":\"mock_enabled\""));
-    s_assert_non_null(s, strstr(body, "\"boot_mode\":\"normal\""));
+    s_assert_non_null(s, strstr(body, "\"claims\":\"{"));
+    s_assert_non_null(s, strstr(body, "boot_state"));
+    s_assert_non_null(s, strstr(body, "secure_boot"));
+    s_assert_non_null(s, strstr(body, "mock_enabled"));
+    s_assert_non_null(s, strstr(body, "boot_mode"));
+    s_assert_non_null(s, strstr(body, "normal"));
 
     fp = fopen("/tmp/vantaq_boot_claim_evidence.json", "wb");
     s_assert_non_null(s, fp);

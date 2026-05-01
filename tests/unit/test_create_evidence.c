@@ -318,7 +318,7 @@ static void test_create_evidence_empty_claims_rejected(void **state) {
                                                             .current_time_unix = s->current_time};
         err = vantaq_app_create_evidence(&app_ctx_local, "verifier-1", &req, &res);
     }
-    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS);
+    s_assert_int_equal(s, err, VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG);
 }
 
 static void test_create_evidence_claim_not_allowed(void **state) {

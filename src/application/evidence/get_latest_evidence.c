@@ -37,6 +37,9 @@ vantaq_app_get_latest_evidence(struct vantaq_evidence_ring_buffer *ring_buffer,
     read_status = vantaq_evidence_ring_buffer_read_latest_by_verifier_id(ring_buffer, verifier_id,
                                                                          &read_result);
     if (read_status != VANTAQ_EVIDENCE_RING_READ_OK) {
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_INVALID_ARGUMENT) {
+            return VANTAQ_APP_GET_LATEST_EVIDENCE_INVALID_ARGUMENT;
+        }
         return VANTAQ_APP_GET_LATEST_EVIDENCE_INTERNAL_ERROR;
     }
 

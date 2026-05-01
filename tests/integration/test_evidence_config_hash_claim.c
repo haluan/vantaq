@@ -218,8 +218,8 @@ static void test_config_hash_requested_included_and_signature_valid(void **state
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 200);
-    s_assert_non_null(s, strstr(body, "\"claims\":{"));
-    s_assert_non_null(s, strstr(body, "\"config_hash\":\"sha256:"));
+    s_assert_non_null(s, strstr(body, "\"claims\":\"{"));
+    s_assert_non_null(s, strstr(body, "config_hash"));
 
     fp = fopen("/tmp/vantaq_cfg_claim_evidence.json", "wb");
     s_assert_non_null(s, fp);

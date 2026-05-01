@@ -154,7 +154,7 @@ echo "test-verifier-cli: PASS SCENARIO 2"
 
 # SCENARIO 3 — Tampered claims
 echo "test-verifier-cli: SCENARIO 3 - Tampered Claims"
-sed 's/"claims":{[^}]*}/"claims":{"malicious":"payload"}/' evidence.json > evidence_tampered_claims.json
+sed 's/"claims":"[^"]*"/"claims":"{\\"malicious\\":\\"payload\\"}"/' evidence.json > evidence_tampered_claims.json
 if bin/verify_evidence evidence_tampered_claims.json device-server.crt 2>/dev/null; then
   echo "test-verifier-cli: FAIL - accepted tampered claims"
   exit 1

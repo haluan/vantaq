@@ -65,11 +65,11 @@ static void fill_measurement_config(struct vantaq_runtime_config *config, const 
     config->cbSize = sizeof(*config);
     strncpy(config->measurement_firmware_path, firmware_path,
             sizeof(config->measurement_firmware_path) - 1);
-    strncpy(config->measurement_security_config_path, "/etc/vantaqd/security.conf",
+    strncpy(config->measurement_security_config_path, "/etc/hosts",
             sizeof(config->measurement_security_config_path) - 1);
-    strncpy(config->measurement_agent_binary_path, "/usr/local/bin/vantaqd",
+    strncpy(config->measurement_agent_binary_path, "/etc/hosts",
             sizeof(config->measurement_agent_binary_path) - 1);
-    strncpy(config->measurement_boot_state_path, "/run/vantaqd/boot_state",
+    strncpy(config->measurement_boot_state_path, "/etc/hosts",
             sizeof(config->measurement_boot_state_path) - 1);
     config->measurement_max_file_bytes = max_file_bytes;
 }

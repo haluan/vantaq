@@ -38,6 +38,9 @@ vantaq_app_get_evidence_by_id(struct vantaq_evidence_ring_buffer *ring_buffer,
     read_status = vantaq_evidence_ring_buffer_read_by_evidence_id_for_verifier(
         ring_buffer, evidence_id, verifier_id, &read_result);
     if (read_status != VANTAQ_EVIDENCE_RING_READ_OK) {
+        if (read_status == VANTAQ_EVIDENCE_RING_READ_INVALID_ARGUMENT) {
+            return VANTAQ_APP_GET_EVIDENCE_BY_ID_INVALID_ARGUMENT;
+        }
         return VANTAQ_APP_GET_EVIDENCE_BY_ID_INTERNAL_ERROR;
     }
     if (read_result == NULL) {

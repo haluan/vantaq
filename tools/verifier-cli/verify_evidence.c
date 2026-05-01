@@ -107,6 +107,50 @@ static const char *find_object_end(const char *start) {
     return NULL;
 }
 
+static char *json_unescape(const char *src) {
+    size_t len = strlen(src);
+    char *dst  = malloc(len + 1);
+    if (!dst)
+        return NULL;
+    size_t i = 0, j = 0;
+    while (i < len) {
+        if (src[i] == '\\' && i + 1 < len) {
+            i++;
+            switch (src[i]) {
+            case '"':
+                dst[j++] = '"';
+                break;
+            case '\\':
+                dst[j++] = '\\';
+                break;
+            case 'b':
+                dst[j++] = '\b';
+                break;
+            case 'f':
+                dst[j++] = '\f';
+                break;
+            case 'n':
+                dst[j++] = '\n';
+                break;
+            case 'r':
+                dst[j++] = '\r';
+                break;
+            case 't':
+                dst[j++] = '\t';
+                break;
+            default:
+                dst[j++] = src[i];
+                break;
+            }
+        } else {
+            dst[j++] = src[i];
+        }
+        i++;
+    }
+    dst[j] = '\0';
+    return dst;
+}
+
 static char *extract_raw_value(const char *json, const char *key) {
     size_t key_len   = strlen(key);
     char *quoted_key = malloc(key_len + 3);
@@ -130,12 +174,11 @@ static char *extract_raw_value(const char *json, const char *key) {
 
     const char *start = p;
     const char *end   = NULL;
+    bool is_string    = false;
     if (*p == '\"') {
+        is_string = true;
         start++;
         end = find_string_end(start);
-        if (end) {
-            end++; // include closing quote boundary for slicing logic below
-        }
     } else if (*p == '{') {
         end = find_object_end(start);
     } else {
@@ -147,13 +190,16 @@ static char *extract_raw_value(const char *json, const char *key) {
     if (!end)
         return NULL;
     size_t len = (size_t)(end - start);
-    if (*p == '"' && len > 0) {
-        len--; // remove trailing quote for string values
-    }
-    char *val = malloc(len + 1);
+    char *val  = malloc(len + 1);
     if (val) {
         memcpy(val, start, len);
         val[len] = '\0';
+    }
+
+    if (is_string && val) {
+        char *unescaped = json_unescape(val);
+        free(val);
+        return unescaped;
     }
     return val;
 }

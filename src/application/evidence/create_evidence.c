@@ -12,6 +12,7 @@
 #include "infrastructure/linux_measurement/config_hash.h"
 #include "infrastructure/linux_measurement/firmware_hash.h"
 #include "infrastructure/memory/zero_struct.h"
+#include "json_utils.h"
 
 #include <openssl/crypto.h>
 #include <stdio.h>
@@ -35,6 +36,11 @@ static bool constant_time_bounded_cstring_equal(const char *lhs, const char *rhs
         return false;
     }
 
+    /* E-1: Avoid integer overflow if max_len == SIZE_MAX. */
+    if (max_len == (size_t)-1) {
+        return false;
+    }
+
     lhs_len = strnlen(lhs, max_len + 1U);
     rhs_len = strnlen(rhs, max_len + 1U);
 
@@ -51,17 +57,24 @@ static bool constant_time_bounded_cstring_equal(const char *lhs, const char *rhs
     return bad == 0U;
 }
 
-static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
-                                         size_t secure_boot_size, char *boot_mode,
-                                         size_t boot_mode_size) {
-    bool ok           = false;
-    bool has_secure   = false;
-    bool has_mode     = false;
-    bool has_rollback = false;
-    char *copy        = NULL;
-    char *token_ctx   = NULL;
-    char *token       = NULL;
-    char *equal_sign  = NULL;
+typedef enum {
+    BOOT_STATE_PARSE_OK = 0,
+    BOOT_STATE_PARSE_ERR_MALLOC,
+    BOOT_STATE_PARSE_ERR_FORMAT,
+} boot_state_parse_status_t;
+
+static boot_state_parse_status_t parse_boot_state_claim_value(const char *value, char *secure_boot,
+                                                              size_t secure_boot_size,
+                                                              char *boot_mode,
+                                                              size_t boot_mode_size) {
+    boot_state_parse_status_t status = BOOT_STATE_PARSE_ERR_FORMAT;
+    bool has_secure                  = false;
+    bool has_mode                    = false;
+    bool has_rollback                = false;
+    char *copy                       = NULL;
+    char *token_ctx                  = NULL;
+    char *token                      = NULL;
+    char *equal_sign                 = NULL;
     const char *key;
     const char *val;
 
@@ -75,6 +88,7 @@ static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
 
     copy = strdup(value);
     if (copy == NULL) {
+        status = BOOT_STATE_PARSE_ERR_MALLOC;
         goto cleanup;
     }
 
@@ -119,11 +133,13 @@ static bool parse_boot_state_claim_value(const char *value, char *secure_boot,
         token = strtok_r(NULL, ";", &token_ctx);
     }
 
-    ok = has_secure && has_mode;
+    if (has_secure && has_mode) {
+        status = BOOT_STATE_PARSE_OK;
+    }
 
 cleanup:
     free(copy);
-    return ok;
+    return status;
 }
 
 static bool is_claim_allowed(const struct vantaq_runtime_config *runtime_config,
@@ -159,13 +175,13 @@ validate_claims_selection(const struct vantaq_runtime_config *runtime_config,
     size_t i;
     size_t j;
 
-    if (req->claims_count > VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST) {
-        return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
+    if (req->claims == NULL) {
+        return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
     }
     if (req->claims_count == 0U) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
-    if (req->claims == NULL) {
+    if (req->claims_count > VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_CLAIMS;
     }
 
@@ -229,6 +245,10 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
     int n;
     size_t used = 0;
     char claims_buf[VANTAQ_CLAIMS_MAX];
+    char escaped_model[VANTAQ_MEASUREMENT_VALUE_MAX * 2];
+    char escaped_serial[VANTAQ_MEASUREMENT_VALUE_MAX * 2];
+    char escaped_secure_boot[VANTAQ_MEASUREMENT_VALUE_MAX * 2];
+    char escaped_mode[VANTAQ_MEASUREMENT_VALUE_MAX * 2];
 
     if (runtime_config == NULL || req == NULL || out_claims_json == NULL) {
         return VANTAQ_APP_EVIDENCE_ERR_INVALID_ARG;
@@ -236,16 +256,27 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
     *out_claims_json = NULL;
 
     for (i = 0; i < req->claims_count; i++) {
+        bool known = false;
         if (strcmp(req->claims[i], VANTAQ_CLAIM_DEVICE_IDENTITY) == 0) {
             include_device_identity = true;
+            known                   = true;
         } else if (strcmp(req->claims[i], VANTAQ_CLAIM_FIRMWARE_HASH) == 0) {
             include_firmware_hash = true;
+            known                 = true;
         } else if (strcmp(req->claims[i], VANTAQ_CLAIM_CONFIG_HASH) == 0) {
             include_config_hash = true;
+            known               = true;
         } else if (strcmp(req->claims[i], VANTAQ_CLAIM_AGENT_INTEGRITY) == 0) {
             include_agent_integrity = true;
+            known                   = true;
         } else if (strcmp(req->claims[i], VANTAQ_CLAIM_BOOT_STATE) == 0) {
             include_boot_state = true;
+            known              = true;
+        }
+
+        /* C-1: Ensure every approved claim is handled in the JSON builder. */
+        if (!known) {
+            return VANTAQ_APP_EVIDENCE_ERR_UNSUPPORTED_CLAIM;
         }
     }
 
@@ -262,9 +293,13 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
             goto cleanup;
         }
 
+        /* S-1: Escape config strings to prevent JSON injection. */
+        vantaq_json_escape_str(model, escaped_model, sizeof(escaped_model));
+        vantaq_json_escape_str(serial_number, escaped_serial, sizeof(escaped_serial));
+
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used,
                      "%s\"device_identity\":{\"model\":\"%s\",\"serial_number\":\"%s\"}",
-                     first ? "" : ",", model, serial_number);
+                     first ? "" : ",", escaped_model, escaped_serial);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
@@ -400,16 +435,24 @@ build_claims_json(const struct vantaq_runtime_config *runtime_config,
             app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
             goto cleanup;
         }
-        if (!parse_boot_state_claim_value(boot_state_value, boot_state_secure_boot,
-                                          sizeof(boot_state_secure_boot), boot_state_mode,
-                                          sizeof(boot_state_mode))) {
-            app_err = VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_READ_FAILED;
+        boot_state_parse_status_t parse_status = parse_boot_state_claim_value(
+            boot_state_value, boot_state_secure_boot, sizeof(boot_state_secure_boot),
+            boot_state_mode, sizeof(boot_state_mode));
+        if (parse_status != BOOT_STATE_PARSE_OK) {
+            app_err = (parse_status == BOOT_STATE_PARSE_ERR_MALLOC)
+                          ? VANTAQ_APP_EVIDENCE_ERR_MALLOC_FAILED
+                          : VANTAQ_APP_EVIDENCE_ERR_MEASUREMENT_PARSE_FAILED;
             goto cleanup;
         }
 
+        /* S-1: Escape parsed boot state strings to prevent JSON injection. */
+        vantaq_json_escape_str(boot_state_secure_boot, escaped_secure_boot,
+                               sizeof(escaped_secure_boot));
+        vantaq_json_escape_str(boot_state_mode, escaped_mode, sizeof(escaped_mode));
+
         n = snprintf(claims_buf + used, sizeof(claims_buf) - used,
                      "%s\"boot_state\":{\"secure_boot\":\"%s\",\"boot_mode\":\"%s\"}",
-                     first ? "" : ",", boot_state_secure_boot, boot_state_mode);
+                     first ? "" : ",", escaped_secure_boot, escaped_mode);
         if (n < 0 || (size_t)n >= sizeof(claims_buf) - used) {
             app_err = VANTAQ_APP_EVIDENCE_ERR_CLAIMS_TOO_LARGE;
             goto cleanup;
@@ -440,6 +483,10 @@ cleanup:
     vantaq_explicit_bzero(claims_buf, sizeof(claims_buf));
     vantaq_explicit_bzero(boot_state_secure_boot, sizeof(boot_state_secure_boot));
     vantaq_explicit_bzero(boot_state_mode, sizeof(boot_state_mode));
+    vantaq_explicit_bzero(escaped_model, sizeof(escaped_model));
+    vantaq_explicit_bzero(escaped_serial, sizeof(escaped_serial));
+    vantaq_explicit_bzero(escaped_secure_boot, sizeof(escaped_secure_boot));
+    vantaq_explicit_bzero(escaped_mode, sizeof(escaped_mode));
     return app_err;
 }
 
@@ -558,7 +605,8 @@ vantaq_app_evidence_err_t vantaq_app_create_evidence(const struct vantaq_app_evi
 
     // 7. After successful signing, atomically mark the challenge as used.
     // If another thread already marked it used while we were signing, we fail here.
-    if (vantaq_challenge_is_expired(challenge, ctx->current_time_unix * 1000)) {
+    // C-2: Use fresh timestamp to account for measurement/signing latency.
+    if (vantaq_challenge_is_expired(challenge, (int64_t)time(NULL) * 1000)) {
         app_err = VANTAQ_APP_EVIDENCE_ERR_CHALLENGE_EXPIRED;
         goto cleanup;
     }

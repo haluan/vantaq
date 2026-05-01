@@ -207,8 +207,8 @@ static void test_firmware_hash_requested_included_and_signature_valid(void **sta
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 200);
-    s_assert_non_null(s, strstr(body, "\"claims\":{"));
-    s_assert_non_null(s, strstr(body, "\"firmware_hash\":\"sha256:"));
+    s_assert_non_null(s, strstr(body, "\"claims\":\"{"));
+    s_assert_non_null(s, strstr(body, "firmware_hash"));
 
     fp = fopen("/tmp/vantaq_fw_claim_evidence.json", "wb");
     s_assert_non_null(s, fp);

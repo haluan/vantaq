@@ -49,14 +49,13 @@ static void fill_buffer(char *buffer, size_t len, char fill_char) {
 static void test_measurement_success_creation(void **state) {
     struct MeasurementDomainTestSuite *s = *state;
     vantaq_measurement_model_err_t err   = vantaq_measurement_result_create_success(
-        "firmware_hash", "sha256:abc123", "/opt/vantaqd/firmware/current.bin", &s->result);
+        "firmware_hash", "sha256:abc123", "/etc/hosts", &s->result);
 
     s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_OK);
     s_assert_non_null(s, s->result);
     s_assert_string_equal(s, vantaq_measurement_result_get_claim_name(s->result), "firmware_hash");
     s_assert_string_equal(s, vantaq_measurement_result_get_value(s->result), "sha256:abc123");
-    s_assert_string_equal(s, vantaq_measurement_result_get_source_path(s->result),
-                          "/opt/vantaqd/firmware/current.bin");
+    s_assert_string_equal(s, vantaq_measurement_result_get_source_path(s->result), "/etc/hosts");
     s_assert_int_equal(s, vantaq_measurement_result_get_status(s->result),
                        VANTAQ_MEASUREMENT_STATUS_SUCCESS);
     s_assert_int_equal(s, vantaq_measurement_result_get_error_code(s->result), MEASUREMENT_OK);
@@ -65,7 +64,7 @@ static void test_measurement_success_creation(void **state) {
 static void test_measurement_error_source_not_found(void **state) {
     struct MeasurementDomainTestSuite *s = *state;
     vantaq_measurement_model_err_t err   = vantaq_measurement_result_create_error(
-        "config_hash", "/etc/vantaqd/security.conf", MEASUREMENT_SOURCE_NOT_FOUND, &s->result);
+        "config_hash", "/etc/hosts", MEASUREMENT_SOURCE_NOT_FOUND, &s->result);
 
     s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_OK);
     s_assert_non_null(s, s->result);
@@ -79,7 +78,7 @@ static void test_measurement_error_source_not_found(void **state) {
 static void test_measurement_error_unsupported_claim(void **state) {
     struct MeasurementDomainTestSuite *s = *state;
     vantaq_measurement_model_err_t err   = vantaq_measurement_result_create_error(
-        "unknown_claim", "/run/vantaqd/boot_state", MEASUREMENT_UNSUPPORTED_CLAIM, &s->result);
+        "unknown_claim", "/etc/hosts", MEASUREMENT_UNSUPPORTED_CLAIM, &s->result);
 
     s_assert_int_equal(s, err, VANTAQ_MEASUREMENT_MODEL_OK);
     s_assert_non_null(s, s->result);

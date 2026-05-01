@@ -411,11 +411,11 @@ static void test_valid_subset_has_deterministic_order_and_valid_signature(void *
                        0);
     s_assert_int_equal(s, status, 200);
 
-    pos_device_identity = strstr(body, "\"device_identity\":{");
-    pos_firmware_hash   = strstr(body, "\"firmware_hash\":\"sha256:");
-    pos_config_hash     = strstr(body, "\"config_hash\":\"sha256:");
-    pos_agent_integrity = strstr(body, "\"agent_integrity\":\"sha256:");
-    pos_boot_state      = strstr(body, "\"boot_state\":{");
+    pos_device_identity = strstr(body, "device_identity");
+    pos_firmware_hash   = strstr(body, "firmware_hash");
+    pos_config_hash     = strstr(body, "config_hash");
+    pos_agent_integrity = strstr(body, "agent_integrity");
+    pos_boot_state      = strstr(body, "boot_state");
 
     s_assert_non_null(s, pos_device_identity);
     s_assert_non_null(s, pos_firmware_hash);

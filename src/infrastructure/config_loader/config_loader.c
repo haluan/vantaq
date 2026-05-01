@@ -49,6 +49,7 @@ struct vantaq_config_loader {
     _Atomic(struct vantaq_runtime_config *) active_config;
     struct vantaq_retired_config *retired_head;
     pthread_mutex_t retired_mu;
+    pthread_mutex_t error_mu;
     char last_error[VANTAQ_MAX_ERROR_LEN];
 };
 
@@ -106,9 +107,13 @@ static void loader_set_error(struct vantaq_config_loader *loader, const char *fm
         return;
     }
 
+    if (pthread_mutex_lock(&loader->error_mu) != 0) {
+        return;
+    }
     va_start(args, fmt);
     (void)vsnprintf(loader->last_error, sizeof(loader->last_error), fmt, args);
     va_end(args);
+    (void)pthread_mutex_unlock(&loader->error_mu);
 }
 
 static char *string_dup(const char *input) {
@@ -241,10 +246,13 @@ static void retired_push_config(struct vantaq_config_loader *loader,
     node->cfg  = cfg;
     node->next = NULL;
 
-    (void)pthread_mutex_lock(&loader->retired_mu);
-    node->next           = loader->retired_head;
-    loader->retired_head = node;
-    (void)pthread_mutex_unlock(&loader->retired_mu);
+    if (pthread_mutex_lock(&loader->retired_mu) == 0) {
+        node->next           = loader->retired_head;
+        loader->retired_head = node;
+        (void)pthread_mutex_unlock(&loader->retired_mu);
+    } else {
+        /* If we can't lock, we must leak to avoid UAF, as per C-1/C-2 advice. */
+    }
 }
 
 static enum vantaq_config_status copy_string_to_field(struct vantaq_config_loader *loader,
@@ -411,6 +419,8 @@ static enum vantaq_config_status parse_inline_list(struct vantaq_config_loader *
             if (*end == '\\') {
                 end++;
                 if (*end == '\0') {
+                    /* E-5: Trailing backslash - treat as literal backslash or error.
+                     * The review says it's malformed. We'll skip the escape and keep the \. */
                     break;
                 }
                 end++;
@@ -534,8 +544,12 @@ static enum vantaq_config_status parse_size_t(struct vantaq_config_loader *loade
 
     errno  = 0;
     number = strtoull(local, &endptr, 10);
-    if (errno == ERANGE || *endptr != '\0' || number == 0 || number > SIZE_MAX) {
+    if (errno == ERANGE || *endptr != '\0' || number > SIZE_MAX) {
         loader_set_error(loader, "invalid size for %s", field_name);
+        return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
+    }
+    if (number == 0) {
+        loader_set_error(loader, "value 0 not allowed for %s", field_name);
         return VANTAQ_CONFIG_STATUS_PARSE_ERROR;
     }
 
@@ -800,14 +814,22 @@ static bool can_open_readonly(const char *path) {
 
 static bool has_private_key_permissions(const char *path) {
     struct stat st;
+    int fd;
 
     if (path == NULL || path[0] == '\0') {
         return false;
     }
 
-    if (stat(path, &st) != 0) {
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
         return false;
     }
+
+    if (fstat(fd, &st) != 0) {
+        (void)close(fd);
+        return false;
+    }
+    (void)close(fd);
 
     return (st.st_mode & (S_IRWXG | S_IRWXO)) == 0;
 }
@@ -982,6 +1004,33 @@ static enum vantaq_config_status validate_config(struct vantaq_config_loader *lo
                          "device_identity.device_priv_key_path", config->device_priv_key_path);
         return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
     }
+
+    /* E-2: Validate measurement paths. */
+    if (config->has_measurement_firmware_path &&
+        !can_open_readonly(config->measurement_firmware_path)) {
+        loader_set_error(loader, "unable to read measurement firmware: %s",
+                         config->measurement_firmware_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_measurement_security_config_path &&
+        !can_open_readonly(config->measurement_security_config_path)) {
+        loader_set_error(loader, "unable to read measurement security config: %s",
+                         config->measurement_security_config_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_measurement_agent_binary_path &&
+        !can_open_readonly(config->measurement_agent_binary_path)) {
+        loader_set_error(loader, "unable to read measurement agent binary: %s",
+                         config->measurement_agent_binary_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+    if (config->has_measurement_boot_state_path &&
+        !can_open_readonly(config->measurement_boot_state_path)) {
+        loader_set_error(loader, "unable to read measurement boot state: %s",
+                         config->measurement_boot_state_path);
+        return VANTAQ_CONFIG_STATUS_VALIDATION_ERROR;
+    }
+
     if (!can_open_readonly(config->device_pub_key_path)) {
         loader_set_error(loader, "path not readable for %s: %s",
                          "device_identity.device_pub_key_path", config->device_pub_key_path);
@@ -1869,8 +1918,15 @@ struct vantaq_config_loader *vantaq_config_loader_create(void) {
         return NULL;
     }
 
+    if (pthread_mutex_init(&loader->error_mu, NULL) != 0) {
+        (void)pthread_mutex_destroy(&loader->retired_mu);
+        free(loader);
+        return NULL;
+    }
+
     initial = (struct vantaq_runtime_config *)calloc(1, sizeof(*initial));
     if (initial == NULL) {
+        (void)pthread_mutex_destroy(&loader->error_mu);
         (void)pthread_mutex_destroy(&loader->retired_mu);
         free(loader);
         return NULL;
@@ -1903,6 +1959,7 @@ void vantaq_config_loader_destroy(struct vantaq_config_loader *loader) {
         node = next;
     }
 
+    (void)pthread_mutex_destroy(&loader->error_mu);
     (void)pthread_mutex_destroy(&loader->retired_mu);
     free(loader);
 }
@@ -1915,6 +1972,7 @@ enum vantaq_config_status vantaq_config_loader_load(struct vantaq_config_loader 
 
     if (path == NULL || path[0] == '\0') {
         path = VANTAQ_DEFAULT_CONFIG_PATH;
+        loader_set_error(loader, "no path provided, using default: %s", path);
     }
 
     if (strlen(path) >= VANTAQ_MAX_PATH_LEN) {
@@ -1959,9 +2017,9 @@ enum vantaq_config_status vantaq_config_loader_load_fd(struct vantaq_config_load
     parsed->cbSize = sizeof(*parsed);
     atomic_init(&parsed->ref_count, 1);
 
-    dup_fd = dup(fd);
+    dup_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (dup_fd < 0) {
-        loader_set_error(loader, "unable to duplicate config fd: %s", source);
+        loader_set_error(loader, "unable to duplicate config fd (F_DUPFD_CLOEXEC): %s", source);
         free(parsed);
         return VANTAQ_CONFIG_STATUS_IO_ERROR;
     }
@@ -1990,10 +2048,21 @@ enum vantaq_config_status vantaq_config_loader_load_fd(struct vantaq_config_load
 }
 
 const char *vantaq_config_loader_last_error(const struct vantaq_config_loader *loader) {
-    if (loader == NULL || loader->last_error[0] == '\0') {
+    static _Thread_local char error_copy[VANTAQ_MAX_ERROR_LEN];
+
+    if (loader == NULL) {
         return "";
     }
-    return loader->last_error;
+
+    if (pthread_mutex_lock((pthread_mutex_t *)&loader->error_mu) == 0) {
+        strncpy(error_copy, loader->last_error, sizeof(error_copy) - 1);
+        error_copy[sizeof(error_copy) - 1] = '\0';
+        (void)pthread_mutex_unlock((pthread_mutex_t *)&loader->error_mu);
+    } else {
+        return "error: loader lock failure";
+    }
+
+    return error_copy;
 }
 
 const struct vantaq_runtime_config *
@@ -2200,7 +2269,7 @@ const char *vantaq_runtime_capability_item(const struct vantaq_runtime_config *c
     const struct vantaq_string_list *target = get_list_const(config, list);
 
     if (target == NULL || index >= target->count) {
-        return NULL;
+        return "";
     }
 
     return target->items[index];
@@ -2218,11 +2287,11 @@ const char *vantaq_runtime_allowed_subnet_item(const struct vantaq_runtime_confi
                                                size_t index) {
     if (config == NULL || config->cbSize < offsetof(struct vantaq_runtime_config, allowed_subnets) +
                                                sizeof(config->allowed_subnets)) {
-        return NULL;
+        return "";
     }
 
     if (index >= config->allowed_subnets.count) {
-        return NULL;
+        return "";
     }
 
     return config->allowed_subnets.items[index];
@@ -2264,7 +2333,7 @@ size_t vantaq_runtime_verifier_count(const struct vantaq_runtime_config *config)
 
 const char *vantaq_runtime_verifier_id(const struct vantaq_runtime_config *config, size_t index) {
     if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     return config->verifiers[index].verifier_id;
 }
@@ -2272,7 +2341,7 @@ const char *vantaq_runtime_verifier_id(const struct vantaq_runtime_config *confi
 const char *vantaq_runtime_verifier_cert_subject_cn(const struct vantaq_runtime_config *config,
                                                     size_t index) {
     if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     return config->verifiers[index].cert_subject_cn;
 }
@@ -2280,7 +2349,7 @@ const char *vantaq_runtime_verifier_cert_subject_cn(const struct vantaq_runtime_
 const char *vantaq_runtime_verifier_cert_san_uri(const struct vantaq_runtime_config *config,
                                                  size_t index) {
     if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     return config->verifiers[index].cert_san_uri;
 }
@@ -2288,7 +2357,7 @@ const char *vantaq_runtime_verifier_cert_san_uri(const struct vantaq_runtime_con
 const char *vantaq_runtime_verifier_status(const struct vantaq_runtime_config *config,
                                            size_t index) {
     if (config == NULL || index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     return config->verifiers[index].status;
 }
@@ -2304,10 +2373,10 @@ size_t vantaq_runtime_verifier_role_count(const struct vantaq_runtime_config *co
 const char *vantaq_runtime_verifier_role_item(const struct vantaq_runtime_config *config,
                                               size_t verifier_index, size_t role_index) {
     if (config == NULL || verifier_index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     if (role_index >= config->verifiers[verifier_index].roles.count) {
-        return NULL;
+        return "";
     }
     return config->verifiers[verifier_index].roles.items[role_index];
 }
@@ -2323,25 +2392,39 @@ size_t vantaq_runtime_verifier_allowed_api_count(const struct vantaq_runtime_con
 const char *vantaq_runtime_verifier_allowed_api_item(const struct vantaq_runtime_config *config,
                                                      size_t verifier_index, size_t api_index) {
     if (config == NULL || verifier_index >= vantaq_runtime_verifier_count(config)) {
-        return NULL;
+        return "";
     }
     if (api_index >= config->verifiers[verifier_index].allowed_apis.count) {
-        return NULL;
+        return "";
     }
     return config->verifiers[verifier_index].allowed_apis.items[api_index];
 }
 
 size_t vantaq_runtime_challenge_ttl_seconds(const struct vantaq_runtime_config *config) {
-    return (config && config->has_challenge_ttl_seconds) ? config->challenge_ttl_seconds : 30;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, challenge_ttl_seconds) +
+                             sizeof(config->challenge_ttl_seconds)) {
+        return 30;
+    }
+    return config->has_challenge_ttl_seconds ? config->challenge_ttl_seconds : 30;
 }
 
 size_t vantaq_runtime_challenge_max_global(const struct vantaq_runtime_config *config) {
-    return (config && config->has_challenge_max_global) ? config->challenge_max_global : 1000;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, challenge_max_global) +
+                             sizeof(config->challenge_max_global)) {
+        return 1000;
+    }
+    return config->has_challenge_max_global ? config->challenge_max_global : 1000;
 }
 
 size_t vantaq_runtime_challenge_max_per_verifier(const struct vantaq_runtime_config *config) {
-    return (config && config->has_challenge_max_per_verifier) ? config->challenge_max_per_verifier
-                                                              : 100;
+    if (config == NULL ||
+        config->cbSize < offsetof(struct vantaq_runtime_config, challenge_max_per_verifier) +
+                             sizeof(config->challenge_max_per_verifier)) {
+        return 100;
+    }
+    return config->has_challenge_max_per_verifier ? config->challenge_max_per_verifier : 100;
 }
 
 const char *vantaq_runtime_evidence_store_file_path(const struct vantaq_runtime_config *config) {

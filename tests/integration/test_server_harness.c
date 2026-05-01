@@ -128,10 +128,10 @@ int write_temp_yaml(int port, const char *allowed_subnets, const char *dev_allow
                            "  challenge_modes: []\n"
                            "  storage_modes: []\n"
                            "measurement:\n"
-                           "  firmware_path: /opt/vantaqd/firmware/current.bin\n"
-                           "  security_config_path: /etc/vantaqd/security.conf\n"
-                           "  agent_binary_path: /usr/local/bin/vantaqd\n"
-                           "  boot_state_path: /run/vantaqd/boot_state\n"
+                           "  firmware_path: /etc/hosts\n"
+                           "  security_config_path: /etc/hosts\n"
+                           "  agent_binary_path: /etc/hosts\n"
+                           "  boot_state_path: /etc/hosts\n"
                            "  max_measurement_file_bytes: 16777216\n"
                            "network_access:\n"
                            "  allowed_subnets: [%s]\n"
@@ -447,20 +447,19 @@ static int write_server_config(const struct vantaq_test_server_opts *opts, int p
     allowed_subnets = opts->allowed_subnets != NULL ? opts->allowed_subnets : "127.0.0.1/32";
     dev_allow_all   = opts->dev_allow_all_networks != NULL ? opts->dev_allow_all_networks : "false";
     cert_path       = opts->tls_enabled ? "config/certs/device-server.crt" : "/etc/hosts";
-    supported_claims_yaml     = opts->supported_claims_yaml != NULL ? opts->supported_claims_yaml
-                                                                    : "    - device_identity\n";
-    measurement_firmware_path = opts->measurement_firmware_path != NULL
-                                    ? opts->measurement_firmware_path
-                                    : "/opt/vantaqd/firmware/current.bin";
+    supported_claims_yaml = opts->supported_claims_yaml != NULL ? opts->supported_claims_yaml
+                                                                : "    - device_identity\n";
+    measurement_firmware_path =
+        opts->measurement_firmware_path != NULL ? opts->measurement_firmware_path : "/etc/hosts";
     measurement_security_config_path = opts->measurement_security_config_path != NULL
                                            ? opts->measurement_security_config_path
-                                           : "/etc/vantaqd/security.conf";
+                                           : "/etc/hosts";
     measurement_agent_binary_path    = opts->measurement_agent_binary_path != NULL
                                            ? opts->measurement_agent_binary_path
-                                           : "/usr/local/bin/vantaqd";
+                                           : "/etc/hosts";
     measurement_boot_state_path      = opts->measurement_boot_state_path != NULL
                                            ? opts->measurement_boot_state_path
-                                           : "/run/vantaqd/boot_state";
+                                           : "/etc/hosts";
     device_priv_key_path = opts->device_priv_key_path != NULL ? opts->device_priv_key_path
                                                               : "config/certs/device-server.key";
     device_pub_key_path  = opts->device_pub_key_path != NULL ? opts->device_pub_key_path
@@ -585,10 +584,10 @@ int vantaq_test_server_start(const struct vantaq_test_server_opts *opts,
     defaults.dev_allow_all_networks           = "false";
     defaults.allowed_apis_yaml                = "      - GET /v1/health\n";
     defaults.supported_claims_yaml            = "    - device_identity\n";
-    defaults.measurement_firmware_path        = "/opt/vantaqd/firmware/current.bin";
-    defaults.measurement_security_config_path = "/etc/vantaqd/security.conf";
-    defaults.measurement_agent_binary_path    = "/usr/local/bin/vantaqd";
-    defaults.measurement_boot_state_path      = "/run/vantaqd/boot_state";
+    defaults.measurement_firmware_path        = "/etc/hosts";
+    defaults.measurement_security_config_path = "/etc/hosts";
+    defaults.measurement_agent_binary_path    = "/etc/hosts";
+    defaults.measurement_boot_state_path      = "/etc/hosts";
     defaults.device_priv_key_path             = "config/certs/device-server.key";
     defaults.device_pub_key_path              = "config/certs/device-server.crt";
     defaults.evidence_store_file_path         = NULL;

@@ -130,6 +130,7 @@ cleanup:
 
 void vantaq_signature_b64_destroy(char *signature_b64) {
     if (signature_b64) {
+        vantaq_explicit_bzero(signature_b64, strlen(signature_b64));
         free(signature_b64);
     }
 }

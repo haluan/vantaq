@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <netdb.h>
 #include <openssl/x509.h>
@@ -35,11 +36,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "infrastructure/crypto/nonce_random.h"
+
 #define VANTAQ_HTTP_REQ_BUF_SIZE 2048
 #define VANTAQ_HTTP_RECV_TIMEOUT_SECONDS 5
 
 static volatile sig_atomic_t g_stop_requested = 0;
 static _Atomic int g_listener_fd              = -1;
+static _Atomic bool g_server_running          = false;
 
 // Rule: Response JSON buffers must be sized based on maximum possible field lengths
 // Each field can be up to VANTAQ_MAX_FIELD_LEN, plus escaping overhead.
@@ -153,6 +157,8 @@ int vantaq_http_send_status_response(struct vantaq_http_connection *connection, 
         status_text = "Bad Request";
     } else if (status_code == 403) {
         status_text = "Forbidden";
+    } else if (status_code == 411) {
+        status_text = "Length Required";
     } else if (status_code == 413) {
         status_text = "Content Too Large";
     }
@@ -221,11 +227,11 @@ static int send_mtls_required_response(struct vantaq_http_connection *connection
     n_resp = snprintf(response, sizeof(response),
                       "HTTP/1.1 401 Unauthorized\r\n"
                       "Content-Type: application/json\r\n"
-                      "Content-Length: %d\r\n"
+                      "Content-Length: %zu\r\n"
                       "Connection: close\r\n"
                       "\r\n"
                       "%s",
-                      n_body, json_body);
+                      (size_t)n_body, json_body);
     if (n_resp <= 0 || (size_t)n_resp >= sizeof(response)) {
         return -1;
     }
@@ -530,7 +536,8 @@ static int parse_request_line(const char *buf, char *method, size_t method_size,
     // to prevent overflows if the caller ever changes the buffer definitions.
     // method_size - 1 and path_size - 1 account for the NUL terminator.
     const char *const sscanf_fmt_template = "%%%zus %%%zus";
-    if (snprintf(fmt, sizeof(fmt), sscanf_fmt_template, method_size - 1, path_size - 1) <= 0) {
+    int n_fmt = snprintf(fmt, sizeof(fmt), sscanf_fmt_template, method_size - 1, path_size - 1);
+    if (n_fmt <= 0 || (size_t)n_fmt >= sizeof(fmt)) {
         return -1;
     }
 
@@ -606,16 +613,8 @@ static int get_route_info(const char *method, const char *path, bool *is_protect
         return 405;
     }
 
-    if (strcmp(path, "/v1/attestation/latest-evidence") == 0) {
-        if (strcmp(method, "GET") == 0) {
-            if (is_protected != NULL) {
-                *is_protected = true;
-            }
-            return 200;
-        }
-        return 405;
-    }
-    if (strcmp(path, "/v1/attestation/evidence/latest") == 0) {
+    if (strcmp(path, "/v1/attestation/evidence/latest") == 0 ||
+        strcmp(path, "/v1/attestation/latest-evidence") == 0) {
         if (strcmp(method, "GET") == 0) {
             if (is_protected != NULL) {
                 *is_protected = true;
@@ -697,16 +696,25 @@ static void handle_client(struct vantaq_http_connection *connection,
     }
 
     {
-        /* S-2: Non-sequential, unpredictable request IDs to prevent info leaks */
+        /* S-3: Non-sequential, unpredictable request IDs to prevent info leaks */
         static _Atomic uint64_t request_counter = 0;
         uint64_t count                          = atomic_fetch_add(&request_counter, 1);
-        struct timespec ts;
-        (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+        char random_hex[17];
+        VANTAQ_ZERO_STRUCT(random_hex);
 
-        /* Mix counter with nanoseconds for better unpredictability without full CSPRNG */
-        uint32_t salt = (uint32_t)(ts.tv_nsec ^ (ts.tv_nsec >> 16));
-        snprintf(request_ctx.request_id, sizeof(request_ctx.request_id), "req-%08x-%04x",
-                 (unsigned int)(count & 0xFFFFFFFF), (unsigned int)(salt & 0xFFFF));
+        /* Mix counter with 64 bits of CSPRNG entropy for strong unpredictability */
+        if (vantaq_crypto_generate_nonce_hex(random_hex, sizeof(random_hex), 8) ==
+            VANTAQ_CRYPTO_OK) {
+            snprintf(request_ctx.request_id, sizeof(request_ctx.request_id), "req-%08x-%s",
+                     (unsigned int)(count & 0xFFFFFFFF), random_hex);
+        } else {
+            /* Fallback if CSPRNG fails - better than sequential alone */
+            struct timespec ts;
+            (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint32_t salt = (uint32_t)(ts.tv_nsec ^ (ts.tv_nsec >> 16));
+            snprintf(request_ctx.request_id, sizeof(request_ctx.request_id), "req-%08x-%04x",
+                     (unsigned int)(count & 0xFFFFFFFF), (unsigned int)(salt & 0xFFFF));
+        }
     }
 
     tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
@@ -740,7 +748,7 @@ static void handle_client(struct vantaq_http_connection *connection,
         total_read += (size_t)n;
         req_buf[total_read] = '\0';
 
-        /* C-2, D-7: Read until end of headers (\r\n\r\n) */
+        /* E-1: Require strict HTTP/1.1 header termination (\r\n\r\n) */
         char *header_end = strstr(req_buf, "\r\n\r\n");
         if (header_end != NULL) {
             size_t header_len  = (size_t)(header_end - req_buf) + 4;
@@ -756,12 +764,14 @@ static void handle_client(struct vantaq_http_connection *connection,
                     /* Need to read more body */
                     continue;
                 }
+            } else if (strcmp(method, "POST") == 0) {
+                /* C-2: Reject POST without Content-Length (we don't support chunked) */
+                const char *cl = vantaq_strcasestr(req_buf, "Content-Length:");
+                if (cl == NULL) {
+                    (void)vantaq_http_send_status_response(connection, 411);
+                    goto cleanup;
+                }
             }
-            break;
-        }
-
-        /* Fallback for very simple clients (HTTP/0.9 or just \n) */
-        if (strstr(req_buf, "\n\n") != NULL || strstr(req_buf, "\n\r\n") != NULL) {
             break;
         }
     }
@@ -794,6 +804,14 @@ static void handle_client(struct vantaq_http_connection *connection,
     if (parse_request_line(req_buf, method, sizeof(method), path, sizeof(path)) != 0) {
         (void)vantaq_http_send_status_response(connection, 400);
         goto cleanup;
+    }
+
+    /* E-2: Strip query parameters from URL path before routing and validation */
+    {
+        char *q = strchr(path, '?');
+        if (q != NULL) {
+            *q = '\0';
+        }
     }
 
     subnet_input.cbSize                 = sizeof(subnet_input);
@@ -869,15 +887,31 @@ static void handle_client(struct vantaq_http_connection *connection,
 
             if (decision != VANTAQ_VERIFIER_POLICY_ALLOW) {
                 const char *reason = "VERIFIER_NOT_ALLOWED";
+                struct vantaq_audit_event audit_event;
+
                 if (decision == VANTAQ_VERIFIER_POLICY_REJECT_INACTIVE) {
                     reason = "VERIFIER_INACTIVE";
                 } else if (decision == VANTAQ_VERIFIER_POLICY_REJECT_MISSING_ID) {
                     reason = "VERIFIER_ID_MISSING";
                 }
 
+                /* S-2: Audit verifier policy denials */
+                VANTAQ_ZERO_STRUCT(audit_event);
+                audit_event.cbSize                 = sizeof(audit_event);
+                audit_event.time_utc_epoch_seconds = time(NULL);
+                audit_event.source_ip  = request_ctx.peer_ip_ok ? request_ctx.peer_ipv4 : "unknown";
+                audit_event.method     = method;
+                audit_event.path       = path;
+                audit_event.result     = "DENY";
+                audit_event.reason     = reason;
+                audit_event.request_id = request_ctx.request_id;
+                audit_event.verifier_id = request_ctx.verifier_auth.identity.id;
+
+                (void)vantaq_audit_log_append(health_ctx->audit_log, &audit_event);
+
                 (void)snprintf(log_buf, sizeof(log_buf),
-                               "http server: verifier denied %s %s reason=%s\n", method, path,
-                               reason);
+                               "http server: verifier denied %s %s verifier=%s reason=%s\n", method,
+                               path, request_ctx.verifier_auth.identity.id, reason);
                 (void)log_text(health_ctx->err_logger, health_ctx->io_ctx, log_buf);
 
                 (void)vantaq_http_send_status_response(connection, 403);
@@ -1025,6 +1059,7 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     bool signals_set                      = false;
     enum vantaq_http_server_status status = VANTAQ_HTTP_SERVER_STATUS_OK;
     int accept_failures                   = 0;
+    struct timeval tv;
     char startup[224];
     char tls_msg[256];
 
@@ -1118,6 +1153,17 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
     }
     signals_set = true;
 
+    /* C-1: Prevent concurrent calls to vantaq_http_server_run */
+    {
+        bool expected = false;
+        if (!atomic_compare_exchange_strong(&g_server_running, &expected, true)) {
+            log_text(options->write_err, options->io_ctx,
+                     "http server: concurrent server instance attempted\n");
+            status = VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
+            goto cleanup;
+        }
+    }
+
     g_stop_requested                      = 0;
     g_listener_fd                         = listener;
     health_ctx.runtime_config             = options->runtime_config;
@@ -1173,9 +1219,23 @@ vantaq_http_server_run(const struct vantaq_http_server_options *options) {
                 status = VANTAQ_HTTP_SERVER_STATUS_RUNTIME_ERROR;
                 break;
             }
-            (void)usleep(100000U * (unsigned int)(accept_failures < 10 ? accept_failures : 10));
+            /* E-5: Safe multiplication with explicit bounds check */
+            {
+                unsigned int multiplier =
+                    (accept_failures < 10) ? (unsigned int)accept_failures : 10U;
+                (void)usleep(100000U * multiplier);
+            }
             continue;
         }
+
+        /* S-4: Prevent fd leak into measurement child processes */
+        (void)fcntl(client_fd, F_SETFD, FD_CLOEXEC);
+
+        /* S-1: Set receive timeout before handshake to prevent blocking indefinite clients */
+        tv.tv_sec  = VANTAQ_HTTP_RECV_TIMEOUT_SECONDS;
+        tv.tv_usec = 0;
+        (void)setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
         accept_failures = 0;
 
         {
@@ -1237,6 +1297,7 @@ cleanup:
     }
     vantaq_tls_server_destroy(tls_server);
     vantaq_audit_log_destroy(audit_log);
+    g_server_running = false;
     return status;
 }
 

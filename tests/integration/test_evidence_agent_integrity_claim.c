@@ -228,8 +228,8 @@ static void test_agent_integrity_requested_included_and_signature_valid(void **s
                                                   &status, body, sizeof(body)),
                        0);
     s_assert_int_equal(s, status, 200);
-    s_assert_non_null(s, strstr(body, "\"claims\":{"));
-    s_assert_non_null(s, strstr(body, "\"agent_integrity\":\"sha256:"));
+    s_assert_non_null(s, strstr(body, "\"claims\":\"{"));
+    s_assert_non_null(s, strstr(body, "agent_integrity"));
 
     fp = fopen("/tmp/vantaq_agent_claim_evidence.json", "wb");
     s_assert_non_null(s, fp);

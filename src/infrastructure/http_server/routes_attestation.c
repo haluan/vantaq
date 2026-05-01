@@ -15,6 +15,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -151,7 +152,12 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
     char json[VANTAQ_CHALLENGE_JSON_BUF_SIZE];
     char response[VANTAQ_CHALLENGE_JSON_BUF_SIZE + 256];
     char purpose[VANTAQ_PURPOSE_MAX];
-    long ttl = (long)ctx->challenge_ttl_seconds;
+    long ttl;
+    if (ctx->challenge_ttl_seconds > (size_t)LONG_MAX) {
+        ttl = LONG_MAX;
+    } else {
+        ttl = (long)ctx->challenge_ttl_seconds;
+    }
     int n;
     const char *body_start;
 
@@ -222,8 +228,13 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
                                sizeof(esc_v_id)) == 0 ||
         vantaq_json_escape_str(vantaq_challenge_get_purpose(challenge), esc_purpose,
                                sizeof(esc_purpose)) == 0) {
-        (void)vantaq_challenge_store_remove(ctx->challenge_store,
-                                            vantaq_challenge_get_id(challenge));
+        enum vantaq_challenge_store_status rm_status =
+            vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
+        if (rm_status != VANTAQ_CHALLENGE_STORE_OK &&
+            rm_status != VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
+            /* S-3: Log store cleanup failure to audit log */
+            audit_challenge_creation(ctx, req_ctx, "denied", "store_cleanup_failed");
+        }
         return -1;
     }
 
@@ -234,8 +245,12 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
 
     /* Handle truncation and resource cleanup */
     if (n < 0 || (size_t)n >= sizeof(json)) {
-        (void)vantaq_challenge_store_remove(ctx->challenge_store,
-                                            vantaq_challenge_get_id(challenge));
+        enum vantaq_challenge_store_status rm_status =
+            vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
+        if (rm_status != VANTAQ_CHALLENGE_STORE_OK &&
+            rm_status != VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
+            audit_challenge_creation(ctx, req_ctx, "denied", "store_cleanup_failed");
+        }
         return -1;
     }
 
@@ -250,18 +265,26 @@ int send_post_challenge_response(struct vantaq_http_connection *connection,
                  (size_t)n, json);
 
     if (n < 0 || (size_t)n >= sizeof(response)) {
-        (void)vantaq_challenge_store_remove(ctx->challenge_store,
-                                            vantaq_challenge_get_id(challenge));
+        enum vantaq_challenge_store_status rm_status =
+            vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
+        if (rm_status != VANTAQ_CHALLENGE_STORE_OK &&
+            rm_status != VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
+            audit_challenge_creation(ctx, req_ctx, "denied", "store_cleanup_failed");
+        }
         return -1;
     }
 
-    /* Only log "allowed" once we know the response is fully constructed and ready to send */
-    audit_challenge_creation(ctx, req_ctx, "allowed", "ok");
+    /* S-2: Only log "allowed" once we know the response is fully constructed and ready to send */
     if (vantaq_http_write_all(connection, response, (size_t)n) != 0) {
-        (void)vantaq_challenge_store_remove(ctx->challenge_store,
-                                            vantaq_challenge_get_id(challenge));
+        enum vantaq_challenge_store_status rm_status =
+            vantaq_challenge_store_remove(ctx->challenge_store, vantaq_challenge_get_id(challenge));
+        if (rm_status != VANTAQ_CHALLENGE_STORE_OK &&
+            rm_status != VANTAQ_CHALLENGE_STORE_ERROR_NOT_FOUND) {
+            audit_challenge_creation(ctx, req_ctx, "denied", "store_cleanup_failed");
+        }
         return -1;
     }
+    audit_challenge_creation(ctx, req_ctx, "allowed", "ok");
     return 0;
 }
 
@@ -323,9 +346,11 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             body_start, "claims", (char *)claims_storage, sizeof(claims_storage[0]),
             VANTAQ_EVIDENCE_MAX_CLAIMS_PER_REQUEST, &claims_count, &claims_present)) {
         audit_evidence_creation(ctx, req_ctx, "denied", "invalid_claims");
-        return send_json_error_response(connection, 400, "invalid_claims", req_ctx->request_id);
+        result = send_json_error_response(connection, 400, "invalid_claims", req_ctx->request_id);
+        goto cleanup;
     }
 
+    /* E-4: Distinguish NULL (missing field) from non-NULL (empty list) */
     if (claims_present) {
         size_t i;
         for (i = 0; i < claims_count; i++) {
@@ -440,7 +465,17 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
         }
 
         const char *claims_json = vantaq_evidence_get_claims(res.evidence);
+        char *esc_claims        = NULL;
         if (claims_json == NULL) {
+            result =
+                send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+            goto cleanup;
+        }
+
+        esc_claims = malloc(VANTAQ_CLAIMS_MAX * 2);
+        if (esc_claims == NULL ||
+            vantaq_json_escape_str(claims_json, esc_claims, VANTAQ_CLAIMS_MAX * 2) == 0) {
+            free(esc_claims);
             result =
                 send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
             goto cleanup;
@@ -450,11 +485,12 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
         int n = snprintf(json, sizeof(json),
                          "{\"evidence_id\":\"%s\",\"device_id\":\"%s\",\"verifier_id\":\"%s\","
                          "\"challenge_id\":\"%s\",\"nonce\":\"%s\",\"purpose\":\"%s\","
-                         "\"timestamp\":%ld,\"claims\":%s,\"signature_algorithm\":\"%s\","
+                         "\"timestamp\":%ld,\"claims\":\"%s\",\"signature_algorithm\":\"%s\","
                          "\"signature\":\"%s\"}\n",
                          esc_ev_id, esc_dev_id, esc_ver_id, esc_ch_id, esc_nonce, esc_purpose,
-                         (long)vantaq_evidence_get_issued_at_unix(res.evidence), claims_json,
+                         (long)vantaq_evidence_get_issued_at_unix(res.evidence), esc_claims,
                          esc_sig_alg, esc_sig);
+        free(esc_claims);
 
         if (n < 0 || (size_t)n >= sizeof(json)) {
             result =
@@ -463,6 +499,7 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
         }
 
         if (ctx->evidence_ring_buffer == NULL) {
+            audit_evidence_creation(ctx, req_ctx, "denied", "ring_buffer_write_failed");
             result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
                                               req_ctx->request_id);
             goto cleanup;
@@ -484,6 +521,7 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                 vantaq_evidence_ring_buffer_max_record_bytes(ctx->evidence_ring_buffer), true,
                 &ring_cfg);
             if (rb_err != RING_BUFFER_OK) {
+                audit_evidence_creation(ctx, req_ctx, "denied", "ring_buffer_write_failed");
                 result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
                                                   req_ctx->request_id);
                 goto cleanup;
@@ -495,6 +533,7 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
                 vantaq_evidence_get_issued_at_unix(res.evidence), json, "sha256:pending", "pending",
                 &ring_record);
             if (rb_err != RING_BUFFER_OK) {
+                audit_evidence_creation(ctx, req_ctx, "denied", "ring_buffer_write_failed");
                 vantaq_ring_buffer_config_destroy(ring_cfg);
                 result = send_json_error_response(connection, 500, "ring_buffer_write_failed",
                                                   req_ctx->request_id);
@@ -507,6 +546,7 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             vantaq_ring_buffer_config_destroy(ring_cfg);
             if (append_status != VANTAQ_EVIDENCE_RING_APPEND_OK || append_result == NULL ||
                 vantaq_ring_buffer_append_result_get_status(append_result) != RING_BUFFER_OK) {
+                audit_evidence_creation(ctx, req_ctx, "denied", "ring_buffer_write_failed");
                 if (append_result != NULL) {
                     vantaq_ring_buffer_append_result_destroy(append_result);
                 }
@@ -518,33 +558,48 @@ int send_post_evidence_response(struct vantaq_http_connection *connection,
             vantaq_ring_buffer_append_result_destroy(append_result);
         }
 
+        /* E-2: Audit as "allowed" because evidence is durably committed to the ring buffer.
+         * Store failure is secondary. */
+        audit_evidence_creation(ctx, req_ctx, "allowed", "ok");
+
         if (ctx->latest_evidence_store != NULL &&
             vantaq_latest_evidence_store_put(ctx->latest_evidence_store,
                                              req_ctx->verifier_auth.identity.id, res.evidence,
                                              res.signature_b64) != VANTAQ_LATEST_EVIDENCE_OK) {
+            /* Persistence to latest evidence store failed, but it's already in the ring buffer. */
             result =
                 send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
             goto cleanup;
         }
 
-        char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
-        n = snprintf(response, sizeof(response),
-                     "HTTP/1.1 200 OK\r\n"
-                     "Content-Type: application/json\r\n"
-                     "Content-Length: %zu\r\n"
-                     "Connection: close\r\n"
-                     "\r\n"
-                     "%s",
-                     (size_t)n, json);
+        {
+            size_t response_size   = (size_t)n + 1024;
+            char *dynamic_response = malloc(response_size);
+            if (dynamic_response == NULL) {
+                result = send_json_error_response(connection, 500, "internal_error",
+                                                  req_ctx->request_id);
+                goto cleanup;
+            }
 
-        if (n < 0 || (size_t)n >= sizeof(response)) {
-            result =
-                send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
-            goto cleanup;
+            n = snprintf(dynamic_response, response_size,
+                         "HTTP/1.1 200 OK\r\n"
+                         "Content-Type: application/json\r\n"
+                         "Content-Length: %zu\r\n"
+                         "Connection: close\r\n"
+                         "\r\n"
+                         "%s",
+                         (size_t)n, json);
+
+            if (n < 0 || (size_t)n >= response_size) {
+                free(dynamic_response);
+                result = send_json_error_response(connection, 500, "internal_error",
+                                                  req_ctx->request_id);
+                goto cleanup;
+            }
+
+            result = vantaq_http_write_all(connection, dynamic_response, (size_t)n);
+            free(dynamic_response);
         }
-
-        audit_evidence_creation(ctx, req_ctx, "allowed", "ok");
-        result = vantaq_http_write_all(connection, response, (size_t)n);
     }
 
 cleanup:
@@ -556,7 +611,6 @@ cleanup:
 int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
                                       const struct vantaq_http_health_context *ctx,
                                       const struct vantaq_http_request_context *req_ctx) {
-    char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
     char *evidence_json = NULL;
     int response_n;
     enum vantaq_app_get_latest_evidence_status status;
@@ -578,22 +632,35 @@ int send_get_latest_evidence_response(struct vantaq_http_connection *connection,
         return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
     }
 
-    response_n = snprintf(response, sizeof(response),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %zu\r\n"
-                          "Connection: close\r\n"
-                          "\r\n"
-                          "%s",
-                          strlen(evidence_json), evidence_json);
-    if (response_n < 0 || (size_t)response_n >= sizeof(response)) {
-        free(evidence_json);
-        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
-    }
+    {
+        size_t json_len        = strlen(evidence_json);
+        size_t response_size   = json_len + 1024;
+        char *dynamic_response = malloc(response_size);
+        if (dynamic_response == NULL) {
+            free(evidence_json);
+            return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+        }
 
-    if (vantaq_http_write_all(connection, response, (size_t)response_n) != 0) {
-        free(evidence_json);
-        return -1;
+        response_n = snprintf(dynamic_response, response_size,
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: application/json\r\n"
+                              "Content-Length: %zu\r\n"
+                              "Connection: close\r\n"
+                              "\r\n"
+                              "%s",
+                              json_len, evidence_json);
+        if (response_n < 0 || (size_t)response_n >= response_size) {
+            free(dynamic_response);
+            free(evidence_json);
+            return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+        }
+
+        if (vantaq_http_write_all(connection, dynamic_response, (size_t)response_n) != 0) {
+            free(dynamic_response);
+            free(evidence_json);
+            return -1;
+        }
+        free(dynamic_response);
     }
     free(evidence_json);
     return 0;
@@ -604,7 +671,6 @@ int send_get_evidence_by_id_response(struct vantaq_http_connection *connection,
                                      const struct vantaq_http_request_context *req_ctx,
                                      const char *evidence_id) {
     enum vantaq_app_get_evidence_by_id_status status;
-    char response[VANTAQ_EVIDENCE_JSON_BUF_SIZE + 512];
     char *evidence_json = NULL;
     int response_n;
 
@@ -628,22 +694,35 @@ int send_get_evidence_by_id_response(struct vantaq_http_connection *connection,
         return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
     }
 
-    response_n = snprintf(response, sizeof(response),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %zu\r\n"
-                          "Connection: close\r\n"
-                          "\r\n"
-                          "%s",
-                          strlen(evidence_json), evidence_json);
-    if (response_n < 0 || (size_t)response_n >= sizeof(response)) {
-        free(evidence_json);
-        return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
-    }
+    {
+        size_t json_len        = strlen(evidence_json);
+        size_t response_size   = json_len + 1024;
+        char *dynamic_response = malloc(response_size);
+        if (dynamic_response == NULL) {
+            free(evidence_json);
+            return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+        }
 
-    if (vantaq_http_write_all(connection, response, (size_t)response_n) != 0) {
-        free(evidence_json);
-        return -1;
+        response_n = snprintf(dynamic_response, response_size,
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: application/json\r\n"
+                              "Content-Length: %zu\r\n"
+                              "Connection: close\r\n"
+                              "\r\n"
+                              "%s",
+                              json_len, evidence_json);
+        if (response_n < 0 || (size_t)response_n >= response_size) {
+            free(dynamic_response);
+            free(evidence_json);
+            return send_json_error_response(connection, 500, "internal_error", req_ctx->request_id);
+        }
+
+        if (vantaq_http_write_all(connection, dynamic_response, (size_t)response_n) != 0) {
+            free(dynamic_response);
+            free(evidence_json);
+            return -1;
+        }
+        free(dynamic_response);
     }
 
     free(evidence_json);

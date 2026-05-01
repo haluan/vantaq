@@ -44,10 +44,10 @@
     "  challenge_modes: [nonce]\n"                                                                 \
     "  storage_modes: [volatile]\n"                                                                \
     "measurement:\n"                                                                               \
-    "  firmware_path: /opt/vantaqd/firmware/current.bin\n"                                         \
-    "  security_config_path: /etc/vantaqd/security.conf\n"                                         \
-    "  agent_binary_path: /usr/local/bin/vantaqd\n"                                                \
-    "  boot_state_path: /run/vantaqd/boot_state\n"                                                 \
+    "  firmware_path: /etc/hosts\n"                                                                \
+    "  security_config_path: /etc/hosts\n"                                                         \
+    "  agent_binary_path: /etc/hosts\n"                                                            \
+    "  boot_state_path: /etc/hosts\n"                                                              \
     "  max_measurement_file_bytes: 16777216\n"
 
 // Assert Pattern: s_assert_xyz style macros

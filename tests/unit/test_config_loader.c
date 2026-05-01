@@ -119,10 +119,10 @@
 
 #define YAML_MEASUREMENT_VALID                                                                     \
     "measurement:\n"                                                                               \
-    "  firmware_path: /opt/vantaqd/firmware/current.bin\n"                                         \
-    "  security_config_path: /etc/vantaqd/security.conf\n"                                         \
-    "  agent_binary_path: /usr/local/bin/vantaqd\n"                                                \
-    "  boot_state_path: /run/vantaqd/boot_state\n"                                                 \
+    "  firmware_path: /etc/hosts\n"                                                                \
+    "  security_config_path: /etc/hosts\n"                                                         \
+    "  agent_binary_path: /etc/hosts\n"                                                            \
+    "  boot_state_path: /etc/hosts\n"                                                              \
     "  max_measurement_file_bytes: 16777216\n"
 
 static int write_temp_yaml(const char *content, char *path_out, size_t path_out_size) {
@@ -531,9 +531,9 @@ static void test_missing_measurement_firmware_path_fails(void **state) {
     const char *yaml =
         YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID YAML_CAPABILITIES_VALID
         "measurement:\n"
-        "  security_config_path: /etc/vantaqd/security.conf\n"
-        "  agent_binary_path: /usr/local/bin/vantaqd\n"
-        "  boot_state_path: /run/vantaqd/boot_state\n"
+        "  security_config_path: /etc/hosts\n"
+        "  agent_binary_path: /etc/hosts\n"
+        "  boot_state_path: /etc/hosts\n"
         "  max_measurement_file_bytes: 16777216\n";
     char path[256] = {0};
     struct vantaq_config_loader *loader;
@@ -554,10 +554,10 @@ static void test_invalid_measurement_max_file_bytes_fails(void **state) {
     const char *yaml =
         YAML_SERVER_VALID YAML_VERIFIERS_VALID YAML_DEVICE_VALID YAML_CAPABILITIES_VALID
         "measurement:\n"
-        "  firmware_path: /opt/vantaqd/firmware/current.bin\n"
-        "  security_config_path: /etc/vantaqd/security.conf\n"
-        "  agent_binary_path: /usr/local/bin/vantaqd\n"
-        "  boot_state_path: /run/vantaqd/boot_state\n"
+        "  firmware_path: /etc/hosts\n"
+        "  security_config_path: /etc/hosts\n"
+        "  agent_binary_path: /etc/hosts\n"
+        "  boot_state_path: /etc/hosts\n"
         "  max_measurement_file_bytes: 0\n";
     char path[256] = {0};
     struct vantaq_config_loader *loader;

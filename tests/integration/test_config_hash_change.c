@@ -120,7 +120,7 @@ static int request_challenge(int port, char *challenge_id, size_t challenge_size
 }
 
 static int extract_config_hash(const char *body, char *hash_out, size_t hash_out_size) {
-    const char *marker = "\"config_hash\":\"";
+    const char *marker = "config_hash";
     const char *start;
     const char *end;
     size_t len;
@@ -134,9 +134,15 @@ static int extract_config_hash(const char *body, char *hash_out, size_t hash_out
         return -1;
     }
     start += strlen(marker);
-    end = strchr(start, '"');
-    if (end == NULL) {
+    // Skip to the next ':' and then the next quote
+    start = strstr(start, "sha256:");
+    if (start == NULL) {
         return -1;
+    }
+
+    end = start;
+    while (*end && *end != '"' && *end != '\\') {
+        end++;
     }
 
     len = (size_t)(end - start);
